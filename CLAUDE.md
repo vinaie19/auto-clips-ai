@@ -18,3 +18,9 @@ Key routing rules:
 - Save progress → invoke /context-save
 - Resume context → invoke /context-restore
 - Author a backlog-ready spec/issue → invoke /spec
+
+## Testing
+
+- Unit/component tests: `npm run test` (Vitest + React Testing Library, jsdom).
+- End-to-end tests: `npm run test:e2e` (Playwright, reuses or starts the dev server).
+- See `TESTING.md` for the full setup. CI runs unit tests via `.github/workflows/test.yml`.
