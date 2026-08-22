@@ -1,0 +1,17 @@
+{
+  "projectName": "auto-clips-ai",
+  "ticketPattern": "[A-Z]+-\\d+",
+  "gateway": "https://coding.flotorch.cloud",
+  "tools": [
+    {
+      "tool": "claude-code",
+      "scope": "local",
+      "modelSlug": "auto"
+    },
+    {
+      "tool": "opencode",
+      "scope": "local",
+      "modelSlug": "auto"
+    }
+  ]
+}
