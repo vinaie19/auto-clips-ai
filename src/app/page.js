@@ -1,4 +1,4 @@
-import { SignedIn, SignedOut } from "@clerk/nextjs";
+import { Show } from "@clerk/nextjs";
 import CreatorWorkspace from "@/components/CreatorWorkspace";
 import LandingPage from "@/components/LandingPage";
 
@@ -10,12 +10,12 @@ import LandingPage from "@/components/LandingPage";
 export default function Home() {
   return (
     <>
-      <SignedOut>
+      <Show when="signed-out">
         <LandingPage />
-      </SignedOut>
-      <SignedIn>
+      </Show>
+      <Show when="signed-in">
         <CreatorWorkspace />
-      </SignedIn>
+      </Show>
     </>
   );
 }
