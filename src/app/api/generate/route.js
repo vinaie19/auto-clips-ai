@@ -16,6 +16,7 @@ import {
   resolveTtsVoice,
   resolveTargetDuration,
   resolveAspectRatio,
+  creditsForDuration,
 } from "@/lib/render-constants";
 import { planVisualBeats } from "@/lib/visual-queries";
 import { fetchBrollForQueries } from "@/lib/pexels-broll";
@@ -136,12 +137,13 @@ export async function POST(request) {
     }
 
     const profile = await ensureUserProfile(userId);
+    const creditCost = creditsForDuration(targetDurationSeconds);
 
-    if (!canGenerate(profile)) {
+    if (!canGenerate(profile, creditCost)) {
       return NextResponse.json(
         {
           code: "PAYWALL_REQUIRED",
-          error: "Free credits exhausted. Upgrade to continue generating.",
+          error: "Not enough credits for this duration. Upgrade or top up to continue.",
         },
         { status: 403 }
       );
@@ -162,7 +164,7 @@ export async function POST(request) {
 
     let updatedProfile;
     try {
-      updatedProfile = await deductCreditIfNeeded(profile);
+      updatedProfile = await deductCreditIfNeeded(profile, creditCost);
     } catch (creditError) {
       if (creditError?.code === "PAYWALL_REQUIRED") {
         return NextResponse.json(
@@ -212,15 +214,17 @@ export async function POST(request) {
         payload,
         error: null,
         credit_refunded: false,
+        credits_charged: creditCost,
       })
       .select("id, prompt, status, created_at")
       .single();
 
     if (videoError) {
       console.error("Supabase video insert error:", videoError);
-      if (!updatedProfile.is_premium) {
-        await supabase.rpc("refund_free_credit", { p_user_id: updatedProfile.id });
-      }
+      await supabase.rpc("refund_free_credit", {
+        p_user_id: updatedProfile.id,
+        p_amount: creditCost,
+      });
       throw new Error("Failed to queue render job.");
     }
 
@@ -244,6 +248,7 @@ export async function POST(request) {
       })),
       freeCreditsRemaining: updatedProfile.free_credits_remaining,
       isPremium: updatedProfile.is_premium,
+      creditsCharged: creditCost,
       message: "Render queued successfully.",
     });
   } catch (error) {

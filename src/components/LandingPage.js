@@ -98,7 +98,9 @@ export default function LandingPage() {
           <p className="text-sm font-medium text-indigo-300">Simple pricing</p>
           <h2 className="mt-2 text-3xl font-semibold text-white">Credits that match how you create</h2>
           <p className="mx-auto mt-3 max-w-xl text-sm text-zinc-400">
-            Start with 3 free videos. Subscribe monthly or top up anytime — no unlimited plans.
+            Start with 6 free credits. Subscribe monthly to generate more — longer
+            clips use more credits (30s=2 · 45s=3 · 60s=4). Subscribers can top up
+            anytime.
           </p>
           <div className="mt-10 grid gap-4 sm:grid-cols-2">
             <article className="glass-card rounded-3xl p-8 text-left">
@@ -108,8 +110,9 @@ export default function LandingPage() {
                 <span className="text-base font-medium text-zinc-400">/mo</span>
               </h3>
               <p className="mt-3 text-sm text-zinc-400">
-                {BILLING_PACKS.starter.credits} videos per month. Top up +
-                {BILLING_PACKS.starter.credits} for ${BILLING_PACKS.starter.priceUsd} anytime.
+                {BILLING_PACKS.starter.credits} credits per month (e.g. up to{" "}
+                {Math.floor(BILLING_PACKS.starter.credits / 2)} × 30s clips). Top-ups
+                available after you subscribe.
               </p>
             </article>
             <article className="glass-card rounded-3xl border border-indigo-400/30 p-8 text-left">
@@ -119,8 +122,9 @@ export default function LandingPage() {
                 <span className="text-base font-medium text-zinc-400">/mo</span>
               </h3>
               <p className="mt-3 text-sm text-zinc-400">
-                {BILLING_PACKS.creator.credits} videos per month. Top up +
-                {BILLING_PACKS.creator.credits} for ${BILLING_PACKS.creator.priceUsd} anytime.
+                {BILLING_PACKS.creator.credits} credits per month (e.g. up to{" "}
+                {Math.floor(BILLING_PACKS.creator.credits / 2)} × 30s clips). Top-ups
+                available after you subscribe.
               </p>
             </article>
           </div>

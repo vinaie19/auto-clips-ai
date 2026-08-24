@@ -1,9 +1,12 @@
-/** Locked packs: Starter ~3 videos/$, Creator ~4 videos/$ ($15 → 60). */
+/** Locked packs: duration-priced credits (30s=2, 45s=3, 60s=4). */
 
 export const BILLING_PACKS = {
-  starter: { id: "starter", label: "Starter", priceUsd: 5, credits: 15 },
-  creator: { id: "creator", label: "Creator", priceUsd: 15, credits: 60 },
+  starter: { id: "starter", label: "Starter", priceUsd: 5, credits: 30 },
+  creator: { id: "creator", label: "Creator", priceUsd: 15, credits: 100 },
 };
+
+/** Free credits granted once when a user profile is created. */
+export const FREE_CREDITS_DEFAULT = 6;
 
 /**
  * Map Paddle price id → credit grant.

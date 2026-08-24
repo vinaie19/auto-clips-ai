@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BILLING_PACKS,
+  FREE_CREDITS_DEFAULT,
   buildTopupPriceSet,
   creditsForPriceId,
   extractClerkUserId,
@@ -11,8 +12,9 @@ import crypto from "node:crypto";
 
 describe("billing-plans (Paddle)", () => {
   it("exposes locked pack sizes", () => {
-    expect(BILLING_PACKS.starter.credits).toBe(15);
-    expect(BILLING_PACKS.creator.credits).toBe(60);
+    expect(BILLING_PACKS.starter.credits).toBe(30);
+    expect(BILLING_PACKS.creator.credits).toBe(100);
+    expect(FREE_CREDITS_DEFAULT).toBe(6);
   });
 
   it("maps price ids to credits from env", () => {
@@ -22,10 +24,10 @@ describe("billing-plans (Paddle)", () => {
       NEXT_PUBLIC_PADDLE_PRICE_CREATOR: "pri_creator",
       NEXT_PUBLIC_PADDLE_PRICE_CREATOR_TOPUP: "pri_creator_top",
     };
-    expect(creditsForPriceId("pri_starter", env)).toBe(15);
-    expect(creditsForPriceId("pri_starter_top", env)).toBe(15);
-    expect(creditsForPriceId("pri_creator", env)).toBe(60);
-    expect(creditsForPriceId("pri_creator_top", env)).toBe(60);
+    expect(creditsForPriceId("pri_starter", env)).toBe(30);
+    expect(creditsForPriceId("pri_starter_top", env)).toBe(30);
+    expect(creditsForPriceId("pri_creator", env)).toBe(100);
+    expect(creditsForPriceId("pri_creator_top", env)).toBe(100);
     expect(creditsForPriceId("pri_unknown", env)).toBeNull();
   });
 

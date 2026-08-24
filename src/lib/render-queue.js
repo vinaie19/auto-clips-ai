@@ -154,27 +154,36 @@ export async function failJob(jobId, { error: errMsg, retryable } = {}) {
 
 /**
  * User manual retry: reset a failed row to pending.
+ * @param {string} jobId
+ * @param {{ creditsCharged?: number }} [opts]
  */
-export async function manualRequeue(jobId) {
+export async function manualRequeue(jobId, opts = {}) {
   const supabase = getSupabaseAdmin();
+
+  const patch = {
+    status: "pending",
+    attempts: 0,
+    error: null,
+    progress: null,
+    video_url: null,
+    thumbnail_url: null,
+    claimed_by: null,
+    claimed_at: null,
+    heartbeat_at: null,
+    next_visible_at: new Date().toISOString(),
+    expires_at: null,
+    credit_refunded: false,
+    updated_at: new Date().toISOString(),
+  };
+
+  const charged = Math.floor(Number(opts.creditsCharged));
+  if (Number.isFinite(charged) && charged >= 1) {
+    patch.credits_charged = charged;
+  }
 
   const { data, error } = await supabase
     .from("videos")
-    .update({
-      status: "pending",
-      attempts: 0,
-      error: null,
-      progress: null,
-      video_url: null,
-      thumbnail_url: null,
-      claimed_by: null,
-      claimed_at: null,
-      heartbeat_at: null,
-      next_visible_at: new Date().toISOString(),
-      expires_at: null,
-      credit_refunded: false,
-      updated_at: new Date().toISOString(),
-    })
+    .update(patch)
     .eq("id", jobId)
     .eq("status", "failed")
     .select("*")

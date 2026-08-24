@@ -6,6 +6,7 @@ import {
   deductCreditIfNeeded,
   ensureUserProfile,
 } from "@/lib/user-credits";
+import { creditsForDuration } from "@/lib/render-constants";
 import { manualRequeue } from "@/lib/render-queue";
 
 export const runtime = "nodejs";
@@ -29,7 +30,7 @@ export async function POST(_request, context) {
 
     const { data: video, error } = await supabase
       .from("videos")
-      .select("id, status, clerk_user_id")
+      .select("id, status, clerk_user_id, payload, credits_charged")
       .eq("id", videoId)
       .eq("clerk_user_id", userId)
       .maybeSingle();
@@ -50,11 +51,18 @@ export async function POST(_request, context) {
       );
     }
 
-    if (!canGenerate(profile)) {
+    const durationFromPayload = video.payload?.targetDurationSeconds;
+    const creditCost = Math.max(
+      1,
+      Math.floor(Number(video.credits_charged)) ||
+        creditsForDuration(durationFromPayload)
+    );
+
+    if (!canGenerate(profile, creditCost)) {
       return NextResponse.json(
         {
           code: "PAYWALL_REQUIRED",
-          error: "Free credits exhausted. Upgrade to continue generating.",
+          error: "Not enough credits to retry. Upgrade or top up to continue.",
         },
         { status: 403 }
       );
@@ -62,7 +70,7 @@ export async function POST(_request, context) {
 
     let updatedProfile;
     try {
-      updatedProfile = await deductCreditIfNeeded(profile);
+      updatedProfile = await deductCreditIfNeeded(profile, creditCost);
     } catch (creditError) {
       if (creditError?.code === "PAYWALL_REQUIRED") {
         return NextResponse.json(
@@ -76,11 +84,12 @@ export async function POST(_request, context) {
       throw creditError;
     }
 
-    const requeued = await manualRequeue(videoId);
+    const requeued = await manualRequeue(videoId, { creditsCharged: creditCost });
     if (!requeued) {
-      if (!updatedProfile.is_premium) {
-        await supabase.rpc("refund_free_credit", { p_user_id: updatedProfile.id });
-      }
+      await supabase.rpc("refund_free_credit", {
+        p_user_id: updatedProfile.id,
+        p_amount: creditCost,
+      });
       return NextResponse.json(
         { error: "Unable to requeue. The job may have changed status." },
         { status: 409 }
@@ -93,6 +102,7 @@ export async function POST(_request, context) {
       statusUrl: `/api/generate/status?id=${encodeURIComponent(requeued.id)}`,
       freeCreditsRemaining: updatedProfile.free_credits_remaining,
       isPremium: updatedProfile.is_premium,
+      creditsCharged: creditCost,
       message: "Render requeued successfully.",
     });
   } catch (error) {

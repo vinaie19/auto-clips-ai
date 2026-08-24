@@ -34,6 +34,7 @@ const DURATION_OPTIONS = Object.values(VIDEO_DURATIONS).map((d) => ({
   seconds: d.seconds,
   label: d.label,
   blurb: d.blurb,
+  credits: d.credits,
 }));
 
 const ASPECT_OPTIONS = Object.values(ASPECT_RATIOS).map((a) => ({
@@ -782,13 +783,7 @@ export default function CreatorWorkspace() {
             <button
               type="button"
               className="hidden rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-3 py-1.5 text-xs font-semibold text-white sm:inline-flex"
-              onClick={() => {
-                if (paddlePrices.starterSub) {
-                  void startCheckout(paddlePrices.starterSub);
-                } else {
-                  setShowPaywall(true);
-                }
-              }}
+              onClick={() => setShowPaywall(true)}
             >
               Get credits
             </button>
@@ -837,7 +832,8 @@ export default function CreatorWorkspace() {
               <div>
                 <h1 className="text-xl font-semibold text-white">Generate</h1>
                 <p className="text-sm text-zinc-400">
-                  Prompt, style, and voice — then send it to the render queue.
+                  Prompt, length, voice, and captions — then send it to the render
+                  queue.
                 </p>
               </div>
 
@@ -858,52 +854,10 @@ export default function CreatorWorkspace() {
                 </label>
               </section>
 
-              <section
-                className={`glass-card rounded-2xl p-5 sm:p-6 ${
-                  captionsEnabled ? "relative z-20" : "relative z-0"
-                }`}
-              >
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium text-zinc-200">Captions</p>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={captionsEnabled}
-                    disabled={isBusy}
-                    onClick={() => setCaptionsEnabled((v) => !v)}
-                    className={`relative h-7 w-12 shrink-0 rounded-full transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                      captionsEnabled ? "bg-indigo-500" : "bg-zinc-700"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white transition ${
-                        captionsEnabled ? "translate-x-5" : "translate-x-0"
-                      }`}
-                    />
-                  </button>
-                </div>
-                <p className="mb-3 text-xs text-zinc-500">
-                  {captionsEnabled
-                    ? "Burned-in captions on the video"
-                    : "No captions — voiceover only"}
-                </p>
-                {captionsEnabled && (
-                  <HoverSelect
-                    label="Subtitle style"
-                    hint="Open the menu and hover options to preview colors."
-                    value={subtitleTheme}
-                    options={SUBTITLE_THEME_OPTIONS}
-                    disabled={isBusy}
-                    variant="caption"
-                    onChange={setSubtitleTheme}
-                  />
-                )}
-              </section>
-
-              <section className="relative z-10 glass-card rounded-2xl p-5 sm:p-6">
+              <section className="glass-card rounded-2xl p-5 sm:p-6">
                 <p className="mb-1 text-sm font-medium text-zinc-200">Length</p>
                 <p className="mb-3 text-xs text-zinc-500">
-                  Target runtime for script + final cut.
+                  Longer clips use more credits (30s=2 · 45s=3 · 60s=4).
                 </p>
                 <div className="grid grid-cols-3 gap-2">
                   {DURATION_OPTIONS.map((option) => (
@@ -922,7 +876,10 @@ export default function CreatorWorkspace() {
                       <span className="block text-sm font-semibold">
                         {option.label}
                       </span>
-                      <span className="mt-1 block text-[10px] text-zinc-500">
+                      <span className="mt-1 block text-[10px] font-medium text-indigo-300/90">
+                        {option.credits} credits
+                      </span>
+                      <span className="mt-0.5 block text-[10px] text-zinc-500">
                         {option.blurb}
                       </span>
                     </button>
@@ -930,7 +887,7 @@ export default function CreatorWorkspace() {
                 </div>
               </section>
 
-              <section className="relative z-10 glass-card rounded-2xl p-5 sm:p-6">
+              <section className="glass-card rounded-2xl p-5 sm:p-6">
                 <p className="mb-1 text-sm font-medium text-zinc-200">
                   Aspect ratio
                 </p>
@@ -962,7 +919,7 @@ export default function CreatorWorkspace() {
                 </div>
               </section>
 
-              <section className="relative z-10 glass-card rounded-2xl p-5 sm:p-6">
+              <section className="relative z-20 glass-card rounded-2xl p-5 sm:p-6">
                 <HoverSelect
                   label="Video tone"
                   hint="Open the menu and hover to read each vibe."
@@ -977,7 +934,7 @@ export default function CreatorWorkspace() {
                 />
               </section>
 
-              <section className="relative z-0 glass-card rounded-2xl p-5 sm:p-6">
+              <section className="relative z-10 glass-card rounded-2xl p-5 sm:p-6">
                 <p className="mb-1 text-sm font-medium text-zinc-200">
                   Narrator voice
                 </p>
@@ -1023,6 +980,48 @@ export default function CreatorWorkspace() {
                     );
                   })}
                 </div>
+              </section>
+
+              <section
+                className={`glass-card rounded-2xl p-5 sm:p-6 ${
+                  captionsEnabled ? "relative z-10" : "relative z-0"
+                }`}
+              >
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-zinc-200">Captions</p>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={captionsEnabled}
+                    disabled={isBusy}
+                    onClick={() => setCaptionsEnabled((v) => !v)}
+                    className={`relative h-7 w-12 shrink-0 rounded-full transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                      captionsEnabled ? "bg-indigo-500" : "bg-zinc-700"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white transition ${
+                        captionsEnabled ? "translate-x-5" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+                <p className="mb-3 text-xs text-zinc-500">
+                  {captionsEnabled
+                    ? "Burned-in captions on the video"
+                    : "No captions — voiceover only"}
+                </p>
+                {captionsEnabled && (
+                  <HoverSelect
+                    label="Subtitle style"
+                    hint="Open the menu and hover options to preview colors."
+                    value={subtitleTheme}
+                    options={SUBTITLE_THEME_OPTIONS}
+                    disabled={isBusy}
+                    variant="caption"
+                    onChange={setSubtitleTheme}
+                  />
+                )}
               </section>
 
               <button
@@ -1327,43 +1326,66 @@ export default function CreatorWorkspace() {
           <div className="glass-card w-full max-w-lg rounded-2xl p-6 text-center shadow-2xl">
             <p className="text-sm font-medium text-indigo-300">Out of credits</p>
             <h3 className="mt-2 text-2xl font-semibold text-white">
-              Subscribe or top up to keep generating
+              {isPremium
+                ? "Top up to keep generating"
+                : "Subscribe to keep generating"}
             </h3>
             <p className="mt-3 text-sm text-zinc-400">
-              Starter ${BILLING_PACKS.starter.priceUsd} · {BILLING_PACKS.starter.credits}{" "}
-              videos · Creator ${BILLING_PACKS.creator.priceUsd} ·{" "}
-              {BILLING_PACKS.creator.credits} videos. Same packs available as one-time
-              top-ups.
+              {isPremium ? (
+                <>
+                  Add +{BILLING_PACKS.starter.credits} or +
+                  {BILLING_PACKS.creator.credits} credits anytime. Longer videos
+                  cost more (30s=2 · 45s=3 · 60s=4).
+                </>
+              ) : (
+                <>
+                  Starter ${BILLING_PACKS.starter.priceUsd}/mo ·{" "}
+                  {BILLING_PACKS.starter.credits} credits · Creator $
+                  {BILLING_PACKS.creator.priceUsd}/mo ·{" "}
+                  {BILLING_PACKS.creator.credits} credits. Longer videos cost more
+                  (30s=2 · 45s=3 · 60s=4). Top-ups unlock after you subscribe.
+                </>
+              )}
             </p>
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => void startCheckout(paddlePrices.starterSub)}
-                className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
-              >
-                Starter ${BILLING_PACKS.starter.priceUsd}/mo
-              </button>
-              <button
-                type="button"
-                onClick={() => void startCheckout(paddlePrices.creatorSub)}
-                className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white"
-              >
-                Creator ${BILLING_PACKS.creator.priceUsd}/mo
-              </button>
-              <button
-                type="button"
-                onClick={() => void startCheckout(paddlePrices.starterTopup)}
-                className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
-              >
-                Top up +{BILLING_PACKS.starter.credits} · ${BILLING_PACKS.starter.priceUsd}
-              </button>
-              <button
-                type="button"
-                onClick={() => void startCheckout(paddlePrices.creatorTopup)}
-                className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
-              >
-                Top up +{BILLING_PACKS.creator.credits} · ${BILLING_PACKS.creator.priceUsd}
-              </button>
+              {!isPremium && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void startCheckout(paddlePrices.starterSub)}
+                    className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
+                  >
+                    Starter ${BILLING_PACKS.starter.priceUsd}/mo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void startCheckout(paddlePrices.creatorSub)}
+                    className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white"
+                  >
+                    Creator ${BILLING_PACKS.creator.priceUsd}/mo
+                  </button>
+                </>
+              )}
+              {isPremium && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void startCheckout(paddlePrices.starterTopup)}
+                    className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
+                  >
+                    Top up +{BILLING_PACKS.starter.credits} · $
+                    {BILLING_PACKS.starter.priceUsd}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void startCheckout(paddlePrices.creatorTopup)}
+                    className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white"
+                  >
+                    Top up +{BILLING_PACKS.creator.credits} · $
+                    {BILLING_PACKS.creator.priceUsd}
+                  </button>
+                </>
+              )}
             </div>
             <button
               type="button"

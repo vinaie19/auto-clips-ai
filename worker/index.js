@@ -218,7 +218,7 @@ async function refundIfNeeded(supabase, video) {
     .eq("id", video.id)
     .eq("credit_refunded", false)
     .eq("status", "failed")
-    .select("id, user_id")
+    .select("id, user_id, credits_charged")
     .maybeSingle();
 
   if (markError) throw markError;
@@ -226,6 +226,7 @@ async function refundIfNeeded(supabase, video) {
 
   const { error } = await supabase.rpc("refund_free_credit", {
     p_user_id: marked.user_id,
+    p_amount: Math.max(1, Math.floor(Number(marked.credits_charged) || 1)),
   });
   if (error) throw error;
 }

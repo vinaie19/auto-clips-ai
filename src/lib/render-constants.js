@@ -188,7 +188,7 @@ export const SUBTITLE_THEMES = {
 
 export const SUBTITLE_THEME_IDS = Object.keys(SUBTITLE_THEMES);
 
-/** Target clip lengths (seconds) → script word / sentence guidance. */
+/** Target clip lengths (seconds) → script word / sentence guidance + credit cost. */
 export const VIDEO_DURATIONS = {
   30: {
     seconds: 30,
@@ -196,6 +196,7 @@ export const VIDEO_DURATIONS = {
     blurb: "Quick hook — short and punchy.",
     wordRange: "70–90",
     sentenceRange: "4 to 6",
+    credits: 2,
   },
   45: {
     seconds: 45,
@@ -203,6 +204,7 @@ export const VIDEO_DURATIONS = {
     blurb: "Standard short-form length.",
     wordRange: "110–130",
     sentenceRange: "6 to 10",
+    credits: 3,
   },
   60: {
     seconds: 60,
@@ -210,11 +212,23 @@ export const VIDEO_DURATIONS = {
     blurb: "Full minute — more room to explain.",
     wordRange: "145–170",
     sentenceRange: "8 to 14",
+    credits: 4,
   },
 };
 
 export const VIDEO_DURATION_SECONDS = [30, 45, 60];
 
+/**
+ * Credits charged for a target duration (30→2, 45→3, 60→4).
+ * @param {unknown} seconds
+ * @returns {number}
+ */
+export function creditsForDuration(seconds) {
+  const n = Number(seconds);
+  const meta = VIDEO_DURATIONS[n];
+  if (meta?.credits) return meta.credits;
+  return VIDEO_DURATIONS[45].credits;
+}
 /** Output frame sizes. */
 export const ASPECT_RATIOS = {
   "9:16": {

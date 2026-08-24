@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from "./supabase-admin";
+import { FREE_CREDITS_DEFAULT } from "./billing-plans";
 
-const FREE_CREDITS_DEFAULT = 3;
 const PROFILE_COLUMNS = "id, clerk_user_id, free_credits_remaining, is_premium";
 
 async function selectProfileByClerkId(supabase, clerkUserId) {
@@ -12,7 +12,7 @@ async function selectProfileByClerkId(supabase, clerkUserId) {
 }
 
 /**
- * Ensure a Clerk user has a profile row. Creates one with 3 free credits if missing.
+ * Ensure a Clerk user has a profile row. Creates one with free credits if missing.
  * Safe under concurrent /api/me + /api/videos calls (handles unique races).
  */
 export async function ensureUserProfile(clerkUserId) {
@@ -71,19 +71,28 @@ export async function ensureUserProfile(clerkUserId) {
   return created;
 }
 
-/** True when the user has at least one spendable credit. */
-export function canGenerate(user) {
-  return Number(user.free_credits_remaining) > 0;
+/**
+ * True when the user has enough spendable credits for this generate.
+ * @param {{ free_credits_remaining?: number }} user
+ * @param {number} [amount=2] minimum credits needed (default = shortest clip)
+ */
+export function canGenerate(user, amount = 2) {
+  const need = Math.max(1, Math.floor(Number(amount) || 2));
+  return Number(user.free_credits_remaining) >= need;
 }
 
 /**
- * Atomically reserve one credit at enqueue time.
- * Throws with code PAYWALL if no credits left.
+ * Atomically reserve `amount` credits at enqueue time.
+ * Throws with code PAYWALL if not enough credits.
+ * @param {{ id: string }} user
+ * @param {number} [amount=1]
  */
-export async function deductCreditIfNeeded(user) {
+export async function deductCreditIfNeeded(user, amount = 1) {
+  const n = Math.max(1, Math.floor(Number(amount) || 1));
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase.rpc("reserve_free_credit", {
     p_user_id: user.id,
+    p_amount: n,
   });
 
   if (error) {
@@ -92,7 +101,9 @@ export async function deductCreditIfNeeded(user) {
   }
 
   if (!data) {
-    const err = new Error("Credits exhausted. Upgrade or top up to continue generating.");
+    const err = new Error(
+      "Not enough credits. Upgrade or top up to continue generating."
+    );
     err.code = "PAYWALL_REQUIRED";
     throw err;
   }
@@ -176,12 +187,14 @@ export async function clearSubscribedFlag(clerkUserId) {
 }
 
 /**
- * Refund one credit for a terminal failed job (idempotent via credit_refunded).
+ * Refund credits for a terminal failed job (idempotent via credit_refunded).
+ * Refunds videos.credits_charged (falls back to 1).
  */
 export async function refundCreditForFailedJob(video) {
   if (!video?.id || !video?.user_id) return null;
   if (video.credit_refunded) return null;
 
+  const amount = Math.max(1, Math.floor(Number(video.credits_charged) || 1));
   const supabase = getSupabaseAdmin();
 
   const { data: marked, error: markError } = await supabase
@@ -193,7 +206,7 @@ export async function refundCreditForFailedJob(video) {
     .eq("id", video.id)
     .eq("credit_refunded", false)
     .eq("status", "failed")
-    .select("id, user_id")
+    .select("id, user_id, credits_charged")
     .maybeSingle();
 
   if (markError) {
@@ -203,8 +216,14 @@ export async function refundCreditForFailedJob(video) {
 
   if (!marked) return null;
 
+  const refundAmount = Math.max(
+    1,
+    Math.floor(Number(marked.credits_charged) || amount)
+  );
+
   const { data, error } = await supabase.rpc("refund_free_credit", {
     p_user_id: marked.user_id,
+    p_amount: refundAmount,
   });
 
   if (error) {

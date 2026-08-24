@@ -6,7 +6,7 @@ create extension if not exists "pgcrypto";
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   clerk_user_id text not null unique,
-  free_credits_remaining integer not null default 3 check (free_credits_remaining >= 0),
+  free_credits_remaining integer not null default 6 check (free_credits_remaining >= 0),
   is_premium boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
