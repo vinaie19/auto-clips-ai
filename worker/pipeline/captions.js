@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 
+/** Keep in sync with src/lib/render-constants.js SUBTITLE_THEMES. */
 const THEMES = {
   "Viral Yellow": {
     primary: "#FFE600",
@@ -15,6 +16,31 @@ const THEMES = {
     primary: "#FFFFFF",
     outline: "#000000",
     textTransform: "none",
+  },
+  "Hot Magenta": {
+    primary: "#FF2D95",
+    outline: "#1A0010",
+    textTransform: "uppercase",
+  },
+  "Sunset Orange": {
+    primary: "#FF8A3D",
+    outline: "#2A1000",
+    textTransform: "uppercase",
+  },
+  "Ice Blue": {
+    primary: "#A8E7FF",
+    outline: "#062033",
+    textTransform: "none",
+  },
+  "Horror White": {
+    primary: "#F5F5F5",
+    outline: "#5C0000",
+    textTransform: "uppercase",
+  },
+  "Lime Pop": {
+    primary: "#C8FF3D",
+    outline: "#102000",
+    textTransform: "uppercase",
   },
 };
 
@@ -65,38 +91,76 @@ function escapeAssText(text) {
 }
 
 /**
- * Write timed ASS captions for vertical video (1080x1920).
+ * Proportional caption windows that always sum to totalDuration.
+ * @param {string[]} blocks
+ * @param {number} totalDuration
+ * @returns {{ start: number, end: number, text: string }[]}
  */
-export function writeAssCaptions(assPath, blocks, totalDuration, themeName) {
+export function computeCaptionTimings(blocks, totalDuration) {
+  const duration = Math.max(0.5, Number(totalDuration) || 0);
+  const list = Array.isArray(blocks) ? blocks.filter(Boolean) : [];
+  if (list.length === 0) return [];
+
+  const weights = list.map((block) => {
+    const words = String(block).split(/\s+/).filter(Boolean).length;
+    return Math.max(1, words);
+  });
+  const weightSum = weights.reduce((a, b) => a + b, 0) || 1;
+
+  let cursor = 0;
+  return list.map((text, i) => {
+    const isLast = i === list.length - 1;
+    const share = weights[i] / weightSum;
+    const start = cursor;
+    const end = isLast
+      ? duration
+      : Math.min(duration, Number((cursor + share * duration).toFixed(4)));
+    cursor = end;
+    return { start, end, text: String(text) };
+  });
+}
+
+/**
+ * Write timed ASS captions.
+ * @param {string} assPath
+ * @param {string[]} blocks
+ * @param {number} totalDuration
+ * @param {string} themeName
+ * @param {{ width?: number, height?: number }} [frame]
+ */
+export function writeAssCaptions(
+  assPath,
+  blocks,
+  totalDuration,
+  themeName,
+  frame = {}
+) {
   const theme = THEMES[themeName] || THEMES["Viral Yellow"];
   const primary = hexToAss(theme.primary);
   const outline = hexToAss(theme.outline);
-  const totalWords = blocks.join(" ").split(/\s+/).filter(Boolean).length || 1;
+  const timings = computeCaptionTimings(blocks, totalDuration);
+  const width = Math.max(16, Math.round(Number(frame.width) || 1080));
+  const height = Math.max(16, Math.round(Number(frame.height) || 1920));
+  const fontSize = height >= width ? 72 : height === width ? 64 : 68;
+  const marginV = Math.round(height * (height >= width ? 0.115 : 0.08));
+  const marginX = Math.round(width * 0.04);
 
-  let cursor = 0;
-  const dialogue = blocks.map((block) => {
-    const words = block.split(/\s+/).filter(Boolean).length;
-    const share = Math.max(words / totalWords, 0.04);
-    const length = Math.max(share * totalDuration, 0.85);
-    const start = cursor;
-    const end = Math.min(cursor + length, totalDuration);
-    cursor = end;
-
+  const dialogue = timings.map(({ start, end, text: block }) => {
+    if (end <= start + 0.01) return null;
     let text = escapeAssText(block);
     if (theme.textTransform === "uppercase") text = text.toUpperCase();
-
     return `Dialogue: 0,${formatAssTime(start)},${formatAssTime(end)},Default,,0,0,0,,${text}`;
-  });
+  }).filter(Boolean);
 
   const content = `[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: ${width}
+PlayResY: ${height}
 WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,72,${primary},&H000000FF,${outline},&H80000000,-1,0,0,0,100,100,0,0,1,6,0,2,40,40,220,1
+Style: Default,Arial Black,${fontSize},${primary},&H000000FF,${outline},&H80000000,-1,0,0,0,100,100,0,0,1,6,0,2,${marginX},${marginX},${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { pickOptimalMp4 } from "@/lib/pexels-broll";
+import {
+  pickOptimalMp4,
+  MAX_VISUAL_BEATS,
+  MIN_VISUAL_BEATS,
+} from "@/lib/pexels-broll";
 
 describe("pickOptimalMp4", () => {
   it("prefers portrait near 1080p", () => {
@@ -18,5 +22,12 @@ describe("pickOptimalMp4", () => {
       },
     ]);
     expect(link).toBe("https://example.com/port.mp4");
+  });
+});
+
+describe("visual beat limits", () => {
+  it("caps continuity edits at 3–5 shots", () => {
+    expect(MIN_VISUAL_BEATS).toBe(3);
+    expect(MAX_VISUAL_BEATS).toBe(5);
   });
 });

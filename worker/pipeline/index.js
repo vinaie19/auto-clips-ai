@@ -5,8 +5,15 @@ import { tmpdir } from "node:os";
 import { synthesizeSpeech } from "./tts.js";
 import { downloadClips } from "./download.js";
 import { writeAssCaptions, chunkIntoPunchyBlocks } from "./captions.js";
-import { renderVerticalMp4, grabThumbnail, probeDurationSeconds } from "./ffmpeg.js";
+import { renderVerticalMp4, grabThumbnail, fitAudioToTarget } from "./ffmpeg.js";
 import { uploadRenderArtifacts } from "./upload.js";
+import { computeSegmentDurations } from "./segment-durations.js";
+
+const ASPECT_SIZES = {
+  "9:16": { width: 1080, height: 1920 },
+  "16:9": { width: 1920, height: 1080 },
+  "1:1": { width: 1080, height: 1080 },
+};
 
 /**
  * Full render: TTS → download → captions → FFmpeg → Storage.
@@ -41,23 +48,49 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
 
     const voice = payload.voice || "nova";
     const subtitleTheme = payload.subtitleTheme || job.subtitle_theme || "Viral Yellow";
+    const captionsEnabled = payload.captionsEnabled !== false;
+    const targetDurationSeconds = [30, 45, 60].includes(Number(payload.targetDurationSeconds))
+      ? Number(payload.targetDurationSeconds)
+      : 45;
+    const aspectRatio = ASPECT_SIZES[payload.aspectRatio]
+      ? payload.aspectRatio
+      : "9:16";
+    const { width, height } = ASPECT_SIZES[aspectRatio];
     const workDir = join(tmpdir(), `autoclips-${job.id}-${Date.now()}`);
 
     await mkdir(workDir, { recursive: true });
 
     try {
-      const audioPath = join(workDir, "audio.mp3");
-      console.log(JSON.stringify({ event: "step_tts", video_id: job.id }));
-      await synthesizeSpeech(script, voice, audioPath);
+      const rawAudioPath = join(workDir, "audio-raw.mp3");
+      console.log(
+        JSON.stringify({
+          event: "step_tts",
+          video_id: job.id,
+          voice,
+          target_s: targetDurationSeconds,
+          aspect: aspectRatio,
+        })
+      );
+      await synthesizeSpeech(script, voice, rawAudioPath);
 
-      const audioDuration = await probeDurationSeconds(audioPath);
-      const duration = Math.min(Math.max(audioDuration || 45, 8), 60);
+      const fittedPath = join(workDir, "audio.mp3");
+      const fitted = await fitAudioToTarget(
+        rawAudioPath,
+        fittedPath,
+        targetDurationSeconds
+      );
+      const audioPath = fitted.path;
+      const duration = Math.min(
+        Math.max(fitted.duration || targetDurationSeconds, 8),
+        targetDurationSeconds * 1.15
+      );
 
       console.log(
         JSON.stringify({
           event: "step_download",
           video_id: job.id,
           clips: pexelsUrls.length,
+          motif: payload.visualMotif || null,
           queries: Array.isArray(payload.visualBeats)
             ? payload.visualBeats.map((b) => b.query)
             : payload.visualQueries || [],
@@ -65,15 +98,25 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
       );
       const clipPaths = await downloadClips(pexelsUrls, workDir);
 
-      // One visual beat ≈ equal share of narration (order matches script)
       const beatCount = clipPaths.length;
-      const segmentDurations = Array.from({ length: beatCount }, () =>
-        Number((duration / beatCount).toFixed(3))
-      );
+      const beatWeights = Array.isArray(payload.visualBeats)
+        ? payload.visualBeats.map((b) => Number(b?.weight) || 1)
+        : null;
+      const segmentDurations = computeSegmentDurations(duration, beatCount, {
+        weights:
+          beatWeights && beatWeights.length === beatCount ? beatWeights : undefined,
+        script,
+      });
 
-      const blocks = chunkIntoPunchyBlocks(script, 3);
-      const assPath = join(workDir, "captions.ass");
-      writeAssCaptions(assPath, blocks, duration, subtitleTheme);
+      let assPath = null;
+      if (captionsEnabled) {
+        const blocks = chunkIntoPunchyBlocks(script, 3);
+        assPath = join(workDir, "captions.ass");
+        writeAssCaptions(assPath, blocks, duration, subtitleTheme, {
+          width,
+          height,
+        });
+      }
 
       const outPath = join(workDir, "out.mp4");
       console.log(
@@ -82,6 +125,9 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
           video_id: job.id,
           duration_s: Number(duration.toFixed(2)),
           beats: beatCount,
+          segments: segmentDurations,
+          captions: captionsEnabled,
+          size: `${width}x${height}`,
         })
       );
       await renderVerticalMp4({
@@ -91,6 +137,8 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
         outPath,
         targetDuration: duration,
         segmentDurations,
+        width,
+        height,
       });
 
     const thumbPath = join(workDir, "thumb.jpg");

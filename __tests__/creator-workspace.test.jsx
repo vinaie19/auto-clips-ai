@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import CreatorWorkspace from "@/components/CreatorWorkspace";
 
 vi.mock("@clerk/nextjs", () => ({
@@ -25,28 +25,34 @@ describe("CreatorWorkspace", () => {
     mockApiResponses();
   });
 
-  it("renders the video prompt form", () => {
+  it("renders generate nav and form by default", () => {
     render(<CreatorWorkspace />);
 
+    expect(screen.getByRole("navigation", { name: "Workspace" })).toBeDefined();
     expect(screen.getByLabelText("Video prompt")).toBeDefined();
-    expect(screen.getByText("Subtitle style theme")).toBeDefined();
+    expect(screen.getByText("Narrator voice")).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Generate" })).toBeDefined();
+    expect(screen.getByText("Subtitle style")).toBeDefined();
     expect(screen.getByText("Video tone")).toBeDefined();
+    expect(screen.getByText("Length")).toBeDefined();
+    expect(screen.getByText("Aspect ratio")).toBeDefined();
   });
 
   it("disables the generate button while the prompt is empty", () => {
     render(<CreatorWorkspace />);
 
     const button = screen.getByRole("button", { name: "Generate AI Video" });
-    expect(button).toBeDefined();
     expect(button.disabled).toBe(true);
   });
 
-  it("shows an empty history state", () => {
+  it("shows empty videos library when Videos is selected", () => {
     render(<CreatorWorkspace />);
 
-    expect(screen.getByText("History log")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: /^Videos$/ }));
+
     expect(
-      screen.getByText("No renders yet — generate your first clip above.")
+      screen.getByText("Your library — open a card to play and see details.")
     ).toBeDefined();
+    expect(screen.getByText("No videos yet.")).toBeDefined();
   });
 });

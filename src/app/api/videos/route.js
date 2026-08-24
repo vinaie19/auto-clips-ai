@@ -19,7 +19,7 @@ export async function GET() {
     const { data, error } = await supabase
       .from("videos")
       .select(
-        "id, prompt, tone, subtitle_theme, video_url, thumbnail_url, status, render_id, error, attempts, created_at"
+        "id, prompt, tone, subtitle_theme, script, video_url, thumbnail_url, status, render_id, error, attempts, created_at, payload"
       )
       .eq("clerk_user_id", userId)
       .order("created_at", { ascending: false })
@@ -30,7 +30,18 @@ export async function GET() {
       throw new Error("Failed to load video history.");
     }
 
-    return NextResponse.json({ videos: data || [] });
+    return NextResponse.json({
+      videos: (data || []).map((row) => {
+        const payload =
+          row.payload && typeof row.payload === "object" ? row.payload : {};
+        return {
+          ...row,
+          targetDurationSeconds: payload.targetDurationSeconds ?? null,
+          aspectRatio: payload.aspectRatio ?? null,
+          payload: undefined,
+        };
+      }),
+    });
   } catch (error) {
     console.error("GET /api/videos failed:", error);
     return NextResponse.json(

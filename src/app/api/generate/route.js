@@ -9,9 +9,15 @@ import {
 import {
   MAX_ATTEMPTS_DEFAULT,
   SUBTITLE_THEMES,
-  TTS_VOICE_BY_TONE,
+  VIDEO_TONES,
+  VIDEO_DURATIONS,
+  ASPECT_RATIOS,
+  resolveCaptionsEnabled,
+  resolveTtsVoice,
+  resolveTargetDuration,
+  resolveAspectRatio,
 } from "@/lib/render-constants";
-import { deriveVisualQueries } from "@/lib/visual-queries";
+import { planVisualBeats } from "@/lib/visual-queries";
 import { fetchBrollForQueries } from "@/lib/pexels-broll";
 
 export const runtime = "nodejs";
@@ -20,22 +26,16 @@ export const maxDuration = 120;
 
 const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
 
-const TONE_PROMPTS = {
-  Moody:
-    "Write in a moody, atmospheric narrator voice — intimate, reflective, cinematic tension.",
-  Corporate:
-    "Write in a polished corporate narrator voice — clear, confident, professional, benefit-led.",
-  Cinematic:
-    "Write in a cinematic, dramatic narrator voice — vivid imagery, measured pacing, high stakes.",
-};
-
-async function draftScript(topic, tone) {
+async function draftScript(topic, tone, targetDurationSeconds) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || apiKey === "your_openai_key_here") {
     throw new Error("OPENAI_API_KEY is not configured on the server.");
   }
 
-  const toneGuide = TONE_PROMPTS[tone] || TONE_PROMPTS.Cinematic;
+  const toneGuide =
+    VIDEO_TONES[tone]?.scriptGuide || VIDEO_TONES.Cinematic.scriptGuide;
+  const durationMeta =
+    VIDEO_DURATIONS[targetDurationSeconds] || VIDEO_DURATIONS[45];
 
   const response = await fetch(OPENAI_CHAT_URL, {
     method: "POST",
@@ -49,12 +49,11 @@ async function draftScript(topic, tone) {
       messages: [
         {
           role: "system",
-          content:
-            "You write punchy vertical short-form video scripts for about 45 seconds of spoken narration. Return clean plain text only — no markdown, no bullet points, no quotes, no labels, no stage directions.",
+          content: `You write punchy short-form video scripts for about ${durationMeta.seconds} seconds of spoken narration (~${durationMeta.wordRange} words). Return clean plain text only — no markdown, no bullet points, no quotes, no labels, no stage directions.`,
         },
         {
           role: "user",
-          content: `Topic/niche: ${topic}\nTone: ${tone}. ${toneGuide}\nWrite a tight script of roughly 110–130 spoken words across 3–5 short sentences.`,
+          content: `Topic/niche: ${topic}\nTone: ${tone}. ${toneGuide}\nTarget length: ${durationMeta.seconds} seconds (~${durationMeta.wordRange} spoken words) across 3–6 short sentences.`,
         },
       ],
     }),
@@ -87,14 +86,20 @@ export async function POST(request) {
       typeof body?.subtitleTheme === "string"
         ? body.subtitleTheme.trim()
         : "Viral Yellow";
+    const captionsEnabled = resolveCaptionsEnabled(body?.captionsEnabled);
+    const voice = resolveTtsVoice(body?.voice, tone);
+    const targetDurationSeconds = resolveTargetDuration(body?.targetDurationSeconds);
+    const aspectRatio = resolveAspectRatio(body?.aspectRatio);
 
     if (!topic) {
       return NextResponse.json({ error: "topic is required." }, { status: 400 });
     }
 
-    if (!Object.keys(TONE_PROMPTS).includes(tone)) {
+    if (!Object.keys(VIDEO_TONES).includes(tone)) {
       return NextResponse.json(
-        { error: "tone must be Moody, Corporate, or Cinematic." },
+        {
+          error: `tone must be one of: ${Object.keys(VIDEO_TONES).join(", ")}.`,
+        },
         { status: 400 }
       );
     }
@@ -102,9 +107,15 @@ export async function POST(request) {
     if (!Object.keys(SUBTITLE_THEMES).includes(subtitleTheme)) {
       return NextResponse.json(
         {
-          error:
-            "subtitleTheme must be Viral Yellow, Cyberpunk Neon, or Clean Minimalist.",
+          error: `subtitleTheme must be one of: ${Object.keys(SUBTITLE_THEMES).join(", ")}.`,
         },
+        { status: 400 }
+      );
+    }
+
+    if (!Object.keys(ASPECT_RATIOS).includes(aspectRatio)) {
+      return NextResponse.json(
+        { error: "aspectRatio must be 9:16, 16:9, or 1:1." },
         { status: 400 }
       );
     }
@@ -121,11 +132,17 @@ export async function POST(request) {
       );
     }
 
-    // 1) Script  2) Visual queries from script  3) One Pexels clip per beat
-    const script = await draftScript(topic, tone);
-    const visualQueries = await deriveVisualQueries(script, topic);
-    const { pexelsVideoUrls, visualBeats } = await fetchBrollForQueries(visualQueries);
-    const voice = TTS_VOICE_BY_TONE[tone] || TTS_VOICE_BY_TONE.Cinematic;
+    // 1) Script  2) Motif + 3–5 continuity shots  3) Pexels per shot
+    const script = await draftScript(topic, tone, targetDurationSeconds);
+    const visualPlan = await planVisualBeats(script, topic);
+    const { pexelsVideoUrls, visualBeats } = await fetchBrollForQueries(
+      visualPlan.queries,
+      {
+        weights: visualPlan.weights,
+        motif: visualPlan.motif,
+        orientation: ASPECT_RATIOS[aspectRatio]?.orientation,
+      }
+    );
 
     let updatedProfile;
     try {
@@ -148,10 +165,15 @@ export async function POST(request) {
       script,
       pexelsVideoUrls,
       visualBeats,
-      visualQueries,
+      visualQueries: visualPlan.queries,
+      visualMotif: visualPlan.motif,
+      visualAvoid: visualPlan.avoid,
       tone,
       subtitleTheme,
       voice,
+      captionsEnabled,
+      targetDurationSeconds,
+      aspectRatio,
     };
 
     const { data: videoRow, error: videoError } = await supabase
@@ -195,7 +217,11 @@ export async function POST(request) {
       videoId: videoRow.id,
       statusUrl: `/api/generate/status?id=${encodeURIComponent(videoRow.id)}`,
       script,
-      visualBeats: visualBeats.map((b) => ({ query: b.query })),
+      visualMotif: visualPlan.motif,
+      visualBeats: visualBeats.map((b) => ({
+        query: b.query,
+        weight: b.weight,
+      })),
       freeCreditsRemaining: updatedProfile.free_credits_remaining,
       isPremium: updatedProfile.is_premium,
       message: "Render queued successfully.",
