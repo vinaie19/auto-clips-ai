@@ -1,5 +1,60 @@
-import { describe, expect, it } from "vitest";
-import { canGenerate, deductCreditIfNeeded } from "@/lib/user-credits";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { canGenerate, deductCreditIfNeeded, ensureUserProfile } from "@/lib/user-credits";
+
+const { mockFrom } = vi.hoisted(() => ({ mockFrom: vi.fn() }));
+
+vi.mock("@/lib/supabase-admin", () => ({
+  getSupabaseAdmin: () => ({ from: mockFrom }),
+}));
+
+describe("ensureUserProfile", () => {
+  beforeEach(() => {
+    mockFrom.mockReset();
+  });
+
+  it("returns the existing row after a concurrent insert race (23505)", async () => {
+    const profile = {
+      id: "u1",
+      clerk_user_id: "clerk_1",
+      free_credits_remaining: 3,
+      is_premium: false,
+    };
+
+    const selectMissing = {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    };
+
+    const insertConflict = {
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({
+            data: null,
+            error: { code: "23505", message: "duplicate" },
+          }),
+        }),
+      }),
+    };
+
+    const selectFound = {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({ data: profile, error: null }),
+        }),
+      }),
+    };
+
+    mockFrom
+      .mockReturnValueOnce(selectMissing)
+      .mockReturnValueOnce(insertConflict)
+      .mockReturnValueOnce(selectFound);
+
+    await expect(ensureUserProfile("clerk_1")).resolves.toEqual(profile);
+  });
+});
 
 describe("canGenerate", () => {
   it("allows premium users regardless of remaining credits", () => {
