@@ -1,6 +1,11 @@
 "use client";
 
-import { SignInButton, UserButton } from "@clerk/nextjs";
+import { SignInButton, UserButton, useAuth } from "@clerk/nextjs";
+import {
+  BILLING_PACKS,
+  getCheckoutBases,
+  withCheckoutUser,
+} from "@/lib/billing-plans";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SUBTITLE_THEMES,
@@ -50,9 +55,6 @@ const TTS_VOICES = [
   { id: "nova", label: "Nova", description: "Bright female" },
   { id: "shimmer", label: "Shimmer", description: "Soft, expressive" },
 ];
-
-const LEMON_CHECKOUT =
-  "https://autoclips.lemonsqueezy.com/checkout/buy/placeholder-unlimited-29";
 
 const PRE_QUEUE_LOADER = "Drafting AI Script & Queueing Render...";
 
@@ -314,6 +316,13 @@ function NavIcon({ name }) {
 }
 
 export default function CreatorWorkspace() {
+  const { userId: clerkUserId } = useAuth();
+  const checkouts = getCheckoutBases();
+  const checkoutStarterSub = withCheckoutUser(checkouts.starterSub, clerkUserId);
+  const checkoutCreatorSub = withCheckoutUser(checkouts.creatorSub, clerkUserId);
+  const checkoutStarterTopup = withCheckoutUser(checkouts.starterTopup, clerkUserId);
+  const checkoutCreatorTopup = withCheckoutUser(checkouts.creatorTopup, clerkUserId);
+
   const [topic, setTopic] = useState("");
   const [subtitleTheme, setSubtitleTheme] = useState("Viral Yellow");
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
@@ -732,20 +741,23 @@ export default function CreatorWorkspace() {
 
           <div className="flex items-center gap-3 sm:gap-4">
             <div className="rounded-full border border-white/10 bg-zinc-900/80 px-3 py-1.5 text-xs font-medium text-zinc-200">
-              {isPremium
-                ? "Unlimited · Premium"
-                : `${credits ?? "—"} credit${credits === 1 ? "" : "s"} left`}
+              {credits ?? "—"} credit{credits === 1 ? "" : "s"} left
+              {isPremium ? " · subscribed" : ""}
             </div>
-            {!isPremium && (
-              <a
-                href={LEMON_CHECKOUT}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hidden rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-3 py-1.5 text-xs font-semibold text-white sm:inline-flex"
-              >
-                Go Unlimited
-              </a>
-            )}
+            <a
+              href={checkoutStarterSub !== "#" ? checkoutStarterSub : "#pricing"}
+              target={checkoutStarterSub !== "#" ? "_blank" : undefined}
+              rel="noopener noreferrer"
+              className="hidden rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-3 py-1.5 text-xs font-semibold text-white sm:inline-flex"
+              onClick={(e) => {
+                if (checkoutStarterSub === "#") {
+                  e.preventDefault();
+                  setShowPaywall(true);
+                }
+              }}
+            >
+              Get credits
+            </a>
             <UserButton afterSignOutUrl="/" />
           </div>
         </div>
@@ -1270,39 +1282,66 @@ export default function CreatorWorkspace() {
 
       {showPaywall && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="glass-card w-full max-w-md rounded-2xl p-6 text-center shadow-2xl">
-            <p className="text-sm font-medium text-indigo-300">Premium required</p>
+          <div className="glass-card w-full max-w-lg rounded-2xl p-6 text-center shadow-2xl">
+            <p className="text-sm font-medium text-indigo-300">Out of credits</p>
             <h3 className="mt-2 text-2xl font-semibold text-white">
-              You&apos;re out of free credits
+              Subscribe or top up to keep generating
             </h3>
             <p className="mt-3 text-sm text-zinc-400">
-              Upgrade to AutoClips Unlimited for continuous generation and priority
-              rendering.
+              Starter ${BILLING_PACKS.starter.priceUsd} · {BILLING_PACKS.starter.credits}{" "}
+              videos · Creator ${BILLING_PACKS.creator.priceUsd} ·{" "}
+              {BILLING_PACKS.creator.credits} videos. Same packs available as one-time
+              top-ups.
             </p>
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
               <a
-                href={LEMON_CHECKOUT}
+                href={checkoutStarterSub}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex-1 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
+                className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
               >
-                Go Unlimited ($29/mo)
+                Starter ${BILLING_PACKS.starter.priceUsd}/mo
               </a>
-              <button
-                type="button"
-                onClick={() => setShowPaywall(false)}
-                className="flex-1 rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
+              <a
+                href={checkoutCreatorSub}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white"
               >
-                Not now
-              </button>
+                Creator ${BILLING_PACKS.creator.priceUsd}/mo
+              </a>
+              <a
+                href={checkoutStarterTopup}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
+              >
+                Top up +{BILLING_PACKS.starter.credits} · ${BILLING_PACKS.starter.priceUsd}
+              </a>
+              <a
+                href={checkoutCreatorTopup}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
+              >
+                Top up +{BILLING_PACKS.creator.credits} · ${BILLING_PACKS.creator.priceUsd}
+              </a>
             </div>
+            <button
+              type="button"
+              onClick={() => setShowPaywall(false)}
+              className="mt-4 w-full rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
+            >
+              Not now
+            </button>
             <div className="mt-4 text-xs text-zinc-500">
-              Already upgraded?{" "}
+              Already paid? Refresh after checkout, or{" "}
               <SignInButton mode="modal">
                 <button type="button" className="text-indigo-300 underline">
-                  Refresh session
+                  refresh session
                 </button>
               </SignInButton>
+              .
             </div>
           </div>
         </div>

@@ -2,17 +2,33 @@
 
 > **For Claude:** Implement task-by-task. Do not skip tests. Spec is source of truth for behavior.
 
-**Goal:** Replace Shotstack with a Postgres-backed render queue, always-on FFmpeg worker, automatic retries, and manual user retry — matching [`2026-08-24-self-hosted-render-queue-spec.md`](./2026-08-24-self-hosted-render-queue-spec.md).
+**Goal:** Replace Shotstack with a Postgres-backed render queue, always-on FFmpeg worker, automatic retries, and manual user retry — matching [`2026-08-24-self-hosted-render-queue-spec.md`](./2026-08-24-self-hosted-render-queue-spec.md). Also ship **metered LemonSqueezy billing** (no Unlimited): Free 3 → **Starter $5 · 15** and **Creator $15 · 60** (each as monthly sub + one-time top-up).
 
-**Architecture:** Next.js owns auth, credits gates, script/Pexels, enqueue, status, manual retry. Worker owns claim/lease/TTS/FFmpeg/object-storage upload/`done`. Queue = extended `videos` table. No Redis. No Flotorch multi-node graph.
+**Architecture:** Next.js owns auth, credits gates, script/Pexels, enqueue, status, manual retry, Lemon webhooks. Worker owns claim/lease/TTS/FFmpeg/object-storage upload/`done`. Queue = extended `videos` table. No Redis. No Flotorch multi-node graph.
 
-**Tech stack:** Next.js 16 (Vercel), Supabase (Postgres + Auth; Storage for local/MVP only), **Cloudflare R2** for prod render MP4s, Clerk, FFmpeg worker on **AWS Lightsail**, Vitest, Playwright (as needed).
+**Tech stack:** Next.js 16 (Vercel), Supabase (Postgres + Auth; Storage for local/MVP only), **Cloudflare R2** for prod render MP4s, Clerk, **LemonSqueezy**, FFmpeg worker on **AWS Lightsail**, Vitest, Playwright (as needed).
 
 **Spec:** `docs/plans/2026-08-24-self-hosted-render-queue-spec.md`
 
-**Worker hosting (locked):** Develop with local `node worker` / Docker. Ship production as an always-on process on a small **AWS Lightsail** Linux instance (Node + FFmpeg, concurrency 1). Next.js stays on Vercel. Not ECS/Fargate for v1.
+**Worker hosting (locked):** Develop with local `node worker` / Docker. Ship production as an always-on process on a small **AWS Lightsail** Linux instance (Node + FFmpeg, **concurrency 1**). Scale later by upsizing the box, then adding processes with unique `WORKER_ID` — do not run 5 encodes on a 1–2 GB VM. Next.js stays on Vercel. Not ECS/Fargate for v1.
 
 **Object storage (locked):** Local/MVP uploads to Supabase bucket `renders`. **Production uploads to Cloudflare R2** (10 GB free storage, **$0 egress**). App only stores the resulting public `video_url` string — no UI change when switching backends.
+
+**Pricing (locked 2026-08-24):**
+
+| Plan | Type | Price | Credits |
+|------|------|-------|---------|
+| Free | One-time grant | $0 | 3 |
+| Starter | Monthly subscription | $5 | +15 per payment/renewal |
+| Creator | Monthly subscription | $15 | +60 per payment/renewal |
+| Top-up Starter | One-time | $5 | +15 |
+| Top-up Creator | One-time | $15 | +60 |
+
+- **Starter ~3 videos/$**; **Creator ~4 videos/$** (60 for $15) to incentivize the higher pack.
+- **No Unlimited.** Every generate deducts 1 credit (paid and free).
+- Refund 1 credit on terminal `failed` for everyone.
+- Fallback experiment later: Starter 15→20 at same $5 if conversion is weak (do not cut price).
+- Cancel-while-queued / mid-render cancel: **not in this plan** (deferred in spec).
 
 ---
 
@@ -30,7 +46,9 @@
 
 **Step 5:** Worker host is already locked (**AWS Lightsail**). Pick plan size (start 1–2 GB), region near users/Supabase, and how secrets are stored on the instance.
 
-**Done when:** Spec open questions 1–4 answered; Lightsail size/region noted in worker README.
+**Step 6 (done):** Pricing = Free 3 / Starter $5·15 / Creator $15·60 (sub + top-up each); LemonSqueezy; no Unlimited; concurrency 1.
+
+**Done when:** Spec open questions answered; Lightsail size/region noted in worker README; pricing locked in spec.
 
 ---
 
@@ -196,6 +214,7 @@ Also implement:
 
 - After insert, optionally `update render_id = id`.
 - **Keep** calling `deductCreditIfNeeded` to reserve the credit. Replace its read-modify-write (`src/lib/user-credits.js`) with an atomic guarded decrement: `UPDATE users SET free_credits_remaining = free_credits_remaining - 1 WHERE id = $1 AND free_credits_remaining > 0 RETURNING *` via RPC; zero rows → 403 PAYWALL.
+- **Do not** skip deduction for `is_premium` (Task 10 removes Unlimited bypass if still present).
 - Return `{ renderId: videoRow.id, videoId, statusUrl: `/api/generate/status?id=${id}`, script, freeCreditsRemaining, … }`.
 
 **Step 2: `GET /api/generate/status`**
@@ -299,7 +318,7 @@ Set `video_url` (and optional thumbnail via ffmpeg frame grab).
 - Modify: `src/lib/user-credits.js` if adding `deductCreditForUserId(userId)` for worker/shared use
 - Tests: credit edge cases
 
-**Step 1:** On terminal `failed` transition only: if not premium, increment `free_credits_remaining` by 1 (refund the enqueue-time reserve). Idempotency: refund only when the `claimed/running → failed` UPDATE actually returns a row.
+**Step 1:** On terminal `failed` transition only: increment `free_credits_remaining` by 1 (refund the enqueue-time reserve) for **all** users — do **not** skip when `is_premium`. Idempotency: refund only when the `credit_refunded` mark / guarded UPDATE succeeds.
 
 **Step 2:** UI status mapping:
 
@@ -311,7 +330,7 @@ Set `video_url` (and optional thumbnail via ffmpeg frame grab).
 
 **Step 4:** Remove Shotstack-specific strings in comments/UI.
 
-**Done when:** Free user loses a credit only after success; Retry works from history.
+**Done when:** User loses a credit only after success (failed refunds); Retry works from history.
 
 ---
 
@@ -346,11 +365,11 @@ Set `video_url` (and optional thumbnail via ffmpeg frame grab).
 
 **Step 2:** Install Node (or Docker) + `ffmpeg`. Clone/deploy `worker/`; set env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, TTS keys, `WORKER_ID`, lease knobs, plus **R2** vars from Task 8c.
 
-**Step 3:** Run under **systemd** or **pm2** so the claim loop restarts on crash/reboot. Cap concurrency to **1**.
+**Step 3:** Run under **systemd** or **pm2** so the claim loop restarts on crash/reboot. Cap to **1 worker process** (1 encode at a time). Document how to add a second process later (unique `WORKER_ID`, only after upsizing RAM).
 
 **Step 4:** Verify logs show claim loop idle; enqueue one staging job from the Vercel app; confirm `done` + **R2** `video_url` (not Supabase Storage).
 
-**Step 5:** Document instance size, region, restart procedure, and how to pull updates in `worker/README.md`.
+**Step 5:** Document instance size, region, restart procedure, **drain-then-restart upgrade** (pending jobs safe; running reclaims after lease), and how to pull updates in `worker/README.md`.
 
 **Done when:** Staging/prod Lightsail worker stays up, completes real jobs against Supabase (queue), and serves MP4s from **R2**. Vercel unchanged for Next.js.
 
@@ -412,6 +431,66 @@ Local default remains `STORAGE_BACKEND=supabase` (or unset).
 
 ---
 
+### Task 10: LemonSqueezy billing — Starter + Creator (replace Unlimited)
+
+**Files:**
+
+- Create: `src/app/api/webhooks/lemonsqueezy/route.js` (or `src/app/api/billing/webhook/route.js`)
+- Create: `src/lib/billing-plans.js` (or constants) — map Lemon variant ids → credit amounts `{ starter: 15, creator: 60 }`
+- Modify: `src/lib/user-credits.js` — `grantCredits(userId, n)`; remove / stop using deduct bypass for `is_premium`
+- Modify: `src/components/CreatorWorkspace.js` — paywall CTAs + 4 checkout URLs
+- Modify: `src/components/LandingPage.js` — pricing copy for both packs
+- Modify: worker refund path — refund everyone (no premium skip)
+- Optional migration: `lemon_customer_id`, `lemon_subscription_id`, `subscription_status`, `plan` (`starter` \| `creator`) on `users`
+- Tests: `__tests__/user-credits.test.js`, webhook/variant→credits unit tests
+
+**Step 1: Lemon dashboard**
+
+- Create **Starter** subscription: $5/mo → 15 credits.
+- Create **Creator** subscription: $15/mo → 60 credits.
+- Create **Top-up Starter** one-time: $5 → +15.
+- Create **Top-up Creator** one-time: $15 → +60.
+- Record variant/product ids for webhook mapping.
+- Configure webhook → production/staging Next URL; store signing secret in Vercel env.
+
+**Step 2: Credits model**
+
+- `canGenerate` / `deductCreditIfNeeded`: **only** check and decrement credits — ignore `is_premium` for gating (or delete bypass).
+- `grantCredits(userId, n)` used by webhook (and optionally admin); `n` is **15 or 60** from variant map.
+- On subscription `payment_success` / initial purchase: `+=` pack size.
+- On top-up `order_created` (paid): `+=` pack size.
+- On subscription cancelled: leave remaining balance; stop future grants.
+- Checkout custom data must include Clerk `user_id` (or matchable email).
+
+**Step 3: UI**
+
+- Replace Unlimited $29 / placeholder checkout with Starter + Creator subscribe and top-up URLs.
+- Paywall: subscribe $5 / $15; top-up $5 / $15.
+- Landing `#pricing`: **$5 · 15 videos** and **$15 · 60 videos**; mention top-ups.
+
+**Env (example)**
+
+```
+LEMONSQUEEZY_WEBHOOK_SECRET=
+NEXT_PUBLIC_LEMON_CHECKOUT_STARTER_SUB=
+NEXT_PUBLIC_LEMON_CHECKOUT_CREATOR_SUB=
+NEXT_PUBLIC_LEMON_CHECKOUT_STARTER_TOPUP=
+NEXT_PUBLIC_LEMON_CHECKOUT_CREATOR_TOPUP=
+LEMON_VARIANT_STARTER=   # server-only map → 15
+LEMON_VARIANT_CREATOR=   # server-only map → 60
+```
+
+**Step 4: Tests**
+
+- Subscribed/paid user with 0 credits → PAYWALL.
+- Grant helper increments by 15 and by 60.
+- Refund still works for paid users on failed jobs.
+- Unknown variant → no grant / logged error.
+
+**Done when:** Spec acceptance 16–18 pass; no UI copy says Unlimited; webhook grants 15 or 60 by variant.
+
+---
+
 ## Suggested implementation order
 
 ```
@@ -420,20 +499,25 @@ Task 0 → 1 → 2 → 3 → 4 → 5 → 7 (UI can poll stub locally)
             Task 6 (real FFmpeg, local / Supabase Storage)
               ↓
             Task 8 → 8c (R2 upload) → 8b (Lightsail + STORAGE_BACKEND=r2) → 9
+              ↓
+            Task 10 (LemonSqueezy Starter + Creator sub/top-up; can parallelize with 8b once credits helpers exist)
 ```
 
-Ship stub worker early so API/UI can be developed without waiting on FFmpeg polish. Local first (Supabase Storage OK). Before/at Lightsail prod: switch uploads to **R2**.
+Ship stub worker early so API/UI can be developed without waiting on FFmpeg polish. Local first (Supabase Storage OK). Before/at Lightsail prod: switch uploads to **R2**. Billing (Task 10) can start after Task 7 once credits are single-path for all users.
 
 ---
 
 ## Definition of done (release)
 
-- [ ] All spec acceptance criteria pass
+- [ ] All spec acceptance criteria pass (including pricing 16–18)
 - [ ] Shotstack not required for generate/status
 - [ ] Worker Dockerfile/README (+ systemd or pm2 notes)
-- [ ] Lightsail worker deployed and completing jobs
+- [ ] Lightsail worker deployed and completing jobs (**1 process**)
 - [ ] Prod/staging uploads to **Cloudflare R2**; `video_url` is an R2 (or custom-domain) HTTPS URL
 - [ ] Migration applied to prod Supabase
-- [ ] Credits: reserve-at-enqueue + refund-on-fail verified
+- [ ] Credits: reserve-at-enqueue + refund-on-fail for **all** users; no Unlimited bypass
+- [ ] LemonSqueezy Starter ($5/15) + Creator ($15/60), each as sub + top-up; webhooks grant by variant
+- [ ] Landing + paywall copy match locked pricing
 - [ ] Manual Retry in UI
 - [ ] Spec + this plan left in `docs/plans/` for future agents
+- [ ] Upgrade/drain procedure documented in `worker/README.md`

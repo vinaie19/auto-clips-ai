@@ -3,7 +3,12 @@ import {
   computeBackoffSeconds,
   isRetryableError,
 } from "@/lib/render-constants";
-import { canGenerate, deductCreditIfNeeded, ensureUserProfile } from "@/lib/user-credits";
+import {
+  canGenerate,
+  deductCreditIfNeeded,
+  ensureUserProfile,
+  grantCreditsForClerkUser,
+} from "@/lib/user-credits";
 
 const { mockFrom, mockRpc } = vi.hoisted(() => ({
   mockFrom: vi.fn(),
@@ -89,12 +94,12 @@ describe("ensureUserProfile", () => {
 });
 
 describe("canGenerate", () => {
-  it("allows premium users regardless of remaining credits", () => {
-    expect(canGenerate({ is_premium: true, free_credits_remaining: 0 })).toBe(true);
+  it("blocks users with zero credits even if marked subscribed", () => {
+    expect(canGenerate({ is_premium: true, free_credits_remaining: 0 })).toBe(false);
   });
 
-  it("blocks free users with zero credits", () => {
-    expect(canGenerate({ is_premium: false, free_credits_remaining: 0 })).toBe(false);
+  it("allows users with remaining credits", () => {
+    expect(canGenerate({ is_premium: false, free_credits_remaining: 1 })).toBe(true);
   });
 });
 
@@ -103,12 +108,25 @@ describe("deductCreditIfNeeded", () => {
     mockRpc.mockReset();
   });
 
-  it("leaves premium users unchanged without touching the database", async () => {
-    const user = { id: "u1", is_premium: true, free_credits_remaining: 5 };
-    const result = await deductCreditIfNeeded(user);
+  it("always reserves via RPC including subscribed users", async () => {
+    mockRpc.mockResolvedValue({
+      data: {
+        id: "u1",
+        clerk_user_id: "c1",
+        free_credits_remaining: 14,
+        is_premium: true,
+      },
+      error: null,
+    });
 
-    expect(result.free_credits_remaining).toBe(5);
-    expect(mockRpc).not.toHaveBeenCalled();
+    const result = await deductCreditIfNeeded({
+      id: "u1",
+      is_premium: true,
+      free_credits_remaining: 15,
+    });
+
+    expect(mockRpc).toHaveBeenCalledWith("reserve_free_credit", { p_user_id: "u1" });
+    expect(result.free_credits_remaining).toBe(14);
   });
 
   it("reserves via RPC for free users", async () => {
@@ -136,7 +154,43 @@ describe("deductCreditIfNeeded", () => {
     mockRpc.mockResolvedValue({ data: null, error: null });
 
     await expect(
-      deductCreditIfNeeded({ id: "u1", is_premium: false, free_credits_remaining: 0 })
+      deductCreditIfNeeded({ id: "u1", is_premium: true, free_credits_remaining: 0 })
     ).rejects.toMatchObject({ code: "PAYWALL_REQUIRED" });
+  });
+});
+
+describe("grantCreditsForClerkUser", () => {
+  beforeEach(() => {
+    mockFrom.mockReset();
+    mockRpc.mockReset();
+  });
+
+  it("grants via RPC after ensuring profile", async () => {
+    const profile = {
+      id: "u1",
+      clerk_user_id: "clerk_1",
+      free_credits_remaining: 3,
+      is_premium: false,
+    };
+
+    mockFrom.mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          maybeSingle: vi.fn().mockResolvedValue({ data: profile, error: null }),
+        }),
+      }),
+    });
+
+    mockRpc.mockResolvedValue({
+      data: { ...profile, free_credits_remaining: 18 },
+      error: null,
+    });
+
+    const result = await grantCreditsForClerkUser("clerk_1", 15);
+    expect(mockRpc).toHaveBeenCalledWith("grant_credits", {
+      p_user_id: "u1",
+      p_amount: 15,
+    });
+    expect(result.free_credits_remaining).toBe(18);
   });
 });

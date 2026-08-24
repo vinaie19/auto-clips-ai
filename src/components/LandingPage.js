@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { SignInButton } from "@clerk/nextjs";
+import { BILLING_PACKS } from "@/lib/billing-plans";
 
 const FEATURES = [
   {
@@ -93,23 +94,44 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section id="pricing" className="mx-auto max-w-3xl px-4 pb-24 text-center sm:px-6">
-          <div className="glass-card rounded-3xl p-8 sm:p-10">
-            <p className="text-sm font-medium text-indigo-300">Simple pricing</p>
-            <h2 className="mt-2 text-3xl font-semibold text-white">Go Unlimited — $29/mo</h2>
-            <p className="mt-3 text-sm text-zinc-400">
-              Start with 3 free generations. Upgrade anytime for unlimited renders and priority
-              cloud processing.
-            </p>
-            <SignInButton mode="modal">
-              <button
-                type="button"
-                className="mt-8 rounded-full bg-white px-6 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200"
-              >
-                Unlock Creator Access
-              </button>
-            </SignInButton>
+        <section id="pricing" className="mx-auto max-w-4xl px-4 pb-24 text-center sm:px-6">
+          <p className="text-sm font-medium text-indigo-300">Simple pricing</p>
+          <h2 className="mt-2 text-3xl font-semibold text-white">Credits that match how you create</h2>
+          <p className="mx-auto mt-3 max-w-xl text-sm text-zinc-400">
+            Start with 3 free videos. Subscribe monthly or top up anytime — no unlimited plans.
+          </p>
+          <div className="mt-10 grid gap-4 sm:grid-cols-2">
+            <article className="glass-card rounded-3xl p-8 text-left">
+              <p className="text-sm font-medium text-indigo-300">{BILLING_PACKS.starter.label}</p>
+              <h3 className="mt-2 text-3xl font-semibold text-white">
+                ${BILLING_PACKS.starter.priceUsd}
+                <span className="text-base font-medium text-zinc-400">/mo</span>
+              </h3>
+              <p className="mt-3 text-sm text-zinc-400">
+                {BILLING_PACKS.starter.credits} videos per month. Top up +
+                {BILLING_PACKS.starter.credits} for ${BILLING_PACKS.starter.priceUsd} anytime.
+              </p>
+            </article>
+            <article className="glass-card rounded-3xl border border-indigo-400/30 p-8 text-left">
+              <p className="text-sm font-medium text-indigo-300">{BILLING_PACKS.creator.label}</p>
+              <h3 className="mt-2 text-3xl font-semibold text-white">
+                ${BILLING_PACKS.creator.priceUsd}
+                <span className="text-base font-medium text-zinc-400">/mo</span>
+              </h3>
+              <p className="mt-3 text-sm text-zinc-400">
+                {BILLING_PACKS.creator.credits} videos per month. Top up +
+                {BILLING_PACKS.creator.credits} for ${BILLING_PACKS.creator.priceUsd} anytime.
+              </p>
+            </article>
           </div>
+          <SignInButton mode="modal">
+            <button
+              type="button"
+              className="mt-8 rounded-full bg-white px-6 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200"
+            >
+              Start with 3 free videos
+            </button>
+          </SignInButton>
         </section>
       </main>
     </div>

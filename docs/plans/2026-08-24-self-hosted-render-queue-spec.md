@@ -1,6 +1,6 @@
 # Spec: Self-Hosted Render Queue (Replace Shotstack)
 
-**Status:** Draft for implementation  
+**Status:** Draft for implementation (pricing + billing locked 2026-08-24)  
 **Date:** 2026-08-24  
 **Repo:** autoclips-saas  
 **Related plan:** [`2026-08-24-self-hosted-render-queue-plan.md`](./2026-08-24-self-hosted-render-queue-plan.md)
@@ -45,6 +45,7 @@ Shotstack features in use: multi-clip video track, rich-text captions + themes, 
 - Durable queue in Supabase/Postgres with crash-safe claim and retries.
 - User can manually retry a finally-failed clip.
 - Credits only consumed for successful renders (or refunded on final fail — see decision below).
+- **Paid plan without Unlimited:** subscription + optional top-up, hard monthly credit caps that match single-worker capacity and OpenAI COGS.
 
 ## Non-Goals (v1)
 
@@ -54,6 +55,12 @@ Shotstack features in use: multi-clip video track, rich-text captions + themes, 
 - 4K, long-form, high concurrency render farm.
 - Word-level caption animations parity with Shotstack (static/punchy burn-in is enough for v1).
 - Running FFmpeg inside Vercel/Next serverless.
+- **Unlimited / `is_premium` bypass** that skips credit deduction.
+- Dynamic pay-any-amount volume formula ($1–$100 slider).
+- Soft overage (per-video after cap).
+- Mid-render cancel (FFmpeg/TTS abort).
+- Cancel-while-queued (optional later — see Deferred).
+- Higher packs beyond Creator ($15/60) — e.g. $29/90 — until demand justifies them.
 
 ---
 
@@ -92,12 +99,18 @@ Render worker (always-on process on **AWS Lightsail**; Next.js stays on Vercel �
 | Render engine (v1) | FFmpeg in a Docker/worker process | Closest cost/control fit for stitch + burn-in captions |
 | TTS | **OpenAI TTS** (`tts-1`); Moody→`onyx`, Corporate→`alloy`, Cinematic→`nova` | Already use OpenAI for scripts |
 | Storage | **Dev/MVP:** Supabase bucket **`renders`** (public). **Prod:** **Cloudflare R2** bucket (public via `r2.dev` or custom domain); `video_url` stores the public HTTPS URL | R2: 10 GB free + **$0 egress** — video views would burn Supabase egress quota; keep Supabase for Postgres/Auth only in prod |
-| Credits | **Reserve at enqueue** (existing `deductCreditIfNeeded`, made atomic), **refund one credit on terminal `failed`**; never deduct for auto-retries; manual retry uses same `canGenerate` check and reserves again on enqueue | Blocks parallel-generate abuse while failed renders stay free via refund |
+| Credits | **Every generate deducts 1 credit** (free and paid). **Reserve at enqueue** (atomic), **refund one credit on terminal `failed`**; never deduct for auto-retries; manual retry uses same `canGenerate` and reserves again on enqueue | No Unlimited bypass; failed renders stay free via refund |
+| Pricing (v1) | **Free: 3** once. **Starter $5 → 15 credits**. **Creator $15 → 60 credits**. Each sold as **monthly subscription** and **one-time top-up** (Starter ~3/$; Creator ~4/$). Fallback: Starter allotment 15→20 at same $5 if conversion weak | Better rate on Creator drives upsell; Creator covers “want more” without Unlimited |
+| Billing | **LemonSqueezy:** 4 products/variants (Starter sub, Creator sub, Starter top-up, Creator top-up); webhooks grant 15 or 60 by variant | Already stubbed in UI; replace Unlimited $29 copy |
+| Paid credit grant | Sub payment/renewal or top-up order → `credits +=` pack size (15 or 60). **No `is_premium` skip of deduct** | Metered credits for everyone |
+| Renewal rule | Prefer **add pack size on successful subscription payment** (leftover rolls). Alternative: reset unused to pack size if abuse appears | Friendlier default; hard cap = current balance only |
 | Auto retry max | 3 attempts total (initial + 2 retries) | Align with Flotorch default `retry.max` |
 | Manual retry | Allowed only when `status = failed`; resets `attempts` to 0; same row id | No duplicate history spam |
 | Worker host | **AWS Lightsail** (small Linux instance) for production; local `node worker` / Docker for development | Use AWS credits; simple VM + FFmpeg; not Vercel serverless; not ECS/Fargate for v1 |
 | App host | Next.js remains on **Vercel** | Worker is a separate always-on process; API/UI stay request/response |
-| Worker concurrency | **1** encode at a time on the Lightsail box | Avoids CPU/memory contention on a cheap instance |
+| Worker concurrency | **1 process / 1 encode** on ~1–2 GB Lightsail. Scale later: bigger instance → 2–3 processes (unique `WORKER_ID`) → more boxes. Do **not** start at 5 workers on a small VM | FFmpeg 1080×1920 is CPU/RAM-bound; parallel encodes OOM/thrash cheap instances |
+| Deploy / env upgrade | Jobs live in Postgres. Prefer drain then restart. In-flight `running` recovers via **lease expiry + reclaim** (may retry; attempts++). Optional later: graceful SIGTERM (finish current job, stop claiming) | Prevents “lost” queue items when upgrading server/env |
+| Cancel | **Not in v1.** Optional later: cancel only `pending` + refund. No mid-render cancel | Queue cancel is easy; aborting TTS/FFmpeg is not |
 
 ### Schema (extend `videos`)
 
@@ -195,10 +208,10 @@ Separate package/folder e.g. `worker/` or `services/render-worker/`:
 1. Long-poll or tight loop claim via SQL (service role).
 2. Set `running`, heartbeat while working.
 3. Pipeline: TTS → download clips → FFmpeg template (9:16, captions from payload themes) → upload object storage (Supabase Storage locally; **R2 in prod**) → update `video_url`, `status=done`.
-4. On success: nothing credit-related (reserved at enqueue). On terminal `failed`: refund one credit for non-premium owner via `refundCreditForVideo(videoId)` in `user-credits`.
+4. On success: nothing credit-related (reserved at enqueue). On terminal `failed`: refund one credit for the owner via `refundCreditForFailedJob` (all users — free and paid — use the same credit balance).
 5. On failure: classify → requeue with backoff or `failed`.
 
-**Credit refund from worker:** on terminal `failed`, use service role to increment `free_credits_remaining` by 1 for non-premium owners, idempotently (refund only when the single `claimed/running → failed` UPDATE returns a row).
+**Credit refund from worker:** on terminal `failed`, use service role to increment `free_credits_remaining` (or renamed `credits_remaining`) by 1, idempotently (refund only when the `credit_refunded` mark succeeds). **Do not skip refund based on `is_premium`.**
 
 ### Frontend
 
@@ -206,6 +219,44 @@ Separate package/folder e.g. `worker/` or `services/render-worker/`:
 - History: Retry button when `status === 'failed'`.
 - Disable generate/retry while a poll is in flight for that id.
 - Remove Shotstack-only copy.
+- **Pricing UI:** replace “Go Unlimited — $29/mo” with **Starter $5 · 15** and **Creator $15 · 60** (subscribe + top-up CTAs) on the paywall and landing `#pricing` section.
+- Show remaining credits for all users (including subscribers); never imply unlimited.
+
+### Pricing & billing (LemonSqueezy)
+
+**Products (4 SKUs)**
+
+| SKU | Type | Price | Credits |
+|-----|------|-------|---------|
+| Starter | Subscription (monthly) | $5 | +15 on each successful payment / renewal |
+| Creator | Subscription (monthly) | $15 | +60 on each successful payment / renewal |
+| Top-up Starter | One-time | $5 | +15 immediately |
+| Top-up Creator | One-time | $15 | +60 immediately |
+
+**Paywall when credits = 0**
+
+1. Subscribe: Starter ($5/mo · 15) or Creator ($15/mo · 60)
+2. Or top-up: +15 for $5 / +60 for $15
+
+**User / schema implications (additive)**
+
+- Keep `free_credits_remaining` as the single spendable balance (or rename to `credits_remaining` in a migration — optional).
+- Stop treating `is_premium=true` as “skip deduct.” Either deprecate the flag or repurpose it to mean “has active paid subscription” for UI only — **generate/retry always require `credits_remaining > 0`**.
+- Store Lemon subscription id / customer id / plan (`starter` \| `creator`) on `users` when convenient for support and cancel webhooks.
+- Webhook route (e.g. `POST /api/webhooks/lemonsqueezy`): verify signature; map **variant/product id → credit amount** (15 or 60); on subscription payment success or paid one-time order → grant that amount; on subscription cancelled → keep remaining credits, stop future renewals.
+- Checkout must pass Clerk user id (custom field) or matchable email so grants land on the right `users` row.
+
+**Capacity note:** Starter (15/mo) is the default safe load for one Lightsail worker. Creator (60/mo) is OK if few subscribers; do not sell Unlimited. Next upsell later: e.g. $29/90 — not in v1.
+
+### Ops: worker upgrades without dropped jobs
+
+| Job state | On worker kill / restart / env change |
+|-----------|----------------------------------------|
+| `pending` | Untouched; next claim picks it up |
+| `running` | Lease expires → reclaimable (`attempts++`); may re-run TTS/FFmpeg |
+| `done` / `failed` | Terminal |
+
+**Procedure:** edit env → `systemctl stop` (or wait for idle) → deploy → start. Prefer finishing in-flight work when possible. Overlap old+new workers briefly is OK if each has a unique `WORKER_ID`.
 
 ### Config / secrets
 
@@ -214,6 +265,8 @@ Remove dependency on `SHOTSTACK_API_KEY` for generate/status.
 Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `WORKER_ID`, lease/backoff env knobs.
 
 **Object storage (prod R2):** `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` (custom domain or `https://pub-….r2.dev`). Optional: `STORAGE_BACKEND=supabase|r2` (default `supabase` for local; set `r2` on Lightsail).
+
+**Billing:** LemonSqueezy webhook secret + checkout URLs (or variant ids) for all **4** SKUs — Starter/Creator sub + Starter/Creator top-up (replace placeholder Unlimited URL in `CreatorWorkspace.js` / `LandingPage.js`).
 
 ---
 
@@ -228,12 +281,15 @@ Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `
 7. Killing the worker mid-job: after lease expiry another worker (or restarted worker) can reclaim; if attempts exceed max → `failed`.
 8. `POST /api/videos/:id/retry` on a `failed` owned row requeues to `pending` with `attempts=0`; on success deducts one credit for free users.
 9. Retry on non-failed or other user’s row returns 4xx; unauthenticated returns 401.
-10. Free user with 0 credits cannot generate or manual-retry (403 `PAYWALL_REQUIRED`).
+10. User with 0 credits cannot generate or manual-retry (403 `PAYWALL_REQUIRED`), including subscribed users who exhausted their allotment.
 11. UI shows Retry on failed history items and polls after manual retry until done/failed.
 12. No production code path calls `api.shotstack.io` after cutover.
 13. Unit/integration tests for claim, backoff, retry classification, credit-on-done, and manual retry are written and passing (`npm run test`).
 14. E2E or documented manual QA checklist covers generate + failed + retry (Playwright may mock worker completion if full FFmpeg e2e is too heavy).
 15. A Lightsail instance runs the worker (systemd/pm2 or Docker), claims `pending` jobs against staging/prod Supabase, uploads the MP4 to **Cloudflare R2**, and completes at least one real render end-to-end with a playable R2 `video_url`.
+16. Landing + paywall advertise **Starter $5 · 15** and **Creator $15 · 60** (subscribe + top-up); no “Unlimited” messaging.
+17. Lemon webhook (or documented manual grant path for staging) adds **15 or 60** credits by purchased variant; generate still decrements for those users.
+18. `is_premium` (if still present) does **not** bypass credit deduction.
 
 ---
 
@@ -271,8 +327,9 @@ Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `
 | FFmpeg template (clips + captions + TTS mux) | 2–4d |
 | Credits-on-done + tests | 0.5–1d |
 | Frontend poll + Retry UI | 0.5–1d |
+| LemonSqueezy Starter + Creator (sub + top-up) + webhook + copy | 1–1.5d |
 | Deploy worker + Lightsail ops docs | 0.5–1d |
-| **Total** | **~7–11d** depending on caption/TTS polish |
+| **Total** | **~8–12.5d** depending on caption/TTS polish + billing |
 
 ---
 
@@ -285,14 +342,16 @@ Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `
 | `src/app/api/generate/status/route.js` | Read DB only |
 | `src/app/api/videos/[id]/retry/route.js` | New |
 | `src/app/api/videos/route.js` | Expose `error` |
-| `src/lib/user-credits.js` | Keep deduct; ensure idempotent done-path |
+| `src/lib/user-credits.js` | Atomic reserve/refund for **all** users; no premium bypass |
 | `src/lib/render-queue.js` (new) | Claim/complete/fail helpers if used from Next (retry) |
-| `src/components/CreatorWorkspace.js` | Status map + Retry |
+| `src/app/api/webhooks/lemonsqueezy/route.js` (new) | Grant +15 or +60 by variant on sub payment / top-up |
+| `src/components/CreatorWorkspace.js` | Status map + Retry + Starter/Creator subscribe + top-up paywall |
+| `src/components/LandingPage.js` | Pricing: $5·15 and $15·60 |
 | `worker/` (new) | Claim loop, pipeline, FFmpeg, upload (Supabase local; **R2 prod**) |
 | `worker/Dockerfile` (optional) | Same image for local + Lightsail if using Docker |
-| `worker/README.md` | Local run + Lightsail deploy + **R2 env** (size, systemd/pm2, secrets) |
-| `.env.local` / docs | Drop Shotstack; document worker env |
-| `__tests__/*` | Queue + credits + retry |
+| `worker/README.md` | Local run + Lightsail deploy + **R2 env** + concurrency 1 + upgrade/drain notes |
+| `.env.local` / docs | Drop Shotstack; document worker + Lemon webhook env |
+| `__tests__/*` | Queue + credits + retry + billing grant helpers |
 | `TESTING.md` / README | Worker how-to |
 
 ## Out of Scope
@@ -300,11 +359,26 @@ Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `
 - Remotion migration (possible v2 if caption animation becomes product-critical).
 - Multi-region workers, priority queues, per-tenant concurrency SLAs.
 - Regenerating script/Pexels on manual retry (reuse `payload`).
-- Billing/Stripe premium flows beyond existing `is_premium` flag.
+- Stripe (LemonSqueezy only for v1 billing).
+- Dynamic $1–$100 credit calculator / pay-what-you-want packs.
+- Soft overage billing after monthly cap.
+- Mid-render cancel; cancel-while-queued (deferred — see below).
+- Packs above Creator ($29/90 etc.).
+- Running 5+ FFmpeg workers on a 1–2 GB Lightsail.
 - ECS/Fargate, Fly, Railway, or bare multi-droplet farms for v1.
 - Co-locating Next.js on Lightsail (keep Vercel unless we later choose to move).
 - Migrating historical Supabase Storage MP4s into R2 (optional; new prod uploads go to R2 only).
 - Signed/private playback URLs (v1 uses public object URLs).
+
+## Deferred (explicit later)
+
+| Item | When |
+|------|------|
+| Cancel while `pending` + credit refund | Users complain about queue wait / wrong topic |
+| Graceful worker shutdown (finish current job on SIGTERM) | Ops pain on deploys |
+| Starter allotment 15 → 20 at same $5 | Conversion too weak after a real test window |
+| Pack above Creator (e.g. $29/90) | Creator subscribers still top up heavily |
+| 2–3 worker processes on larger Lightsail | Sustained queue depth / p95 wait too high |
 
 ## Open Questions (resolve during plan Task 0)
 
@@ -316,7 +390,10 @@ Resolved (2026-08-24):
 - Storage = **Dev/MVP:** Supabase bucket **`renders`**, public URLs. **Prod:** **Cloudflare R2** (public base URL); Supabase Storage not used for new prod renders (egress cost).
 - Rollout = **hard cut** (no `RENDER_BACKEND` dual-run flag).
 - Worker language = **Node** in monorepo `worker/`.
-- Lightsail = start **$10–12 / 2 GB RAM** Ubuntu LTS; concurrency 1; secrets via env file on the instance.
+- Lightsail = start **$10–12 / 2 GB RAM** Ubuntu LTS; **concurrency 1**; secrets via env file on the instance.
+- **Pricing = Free 3; Starter $5·15; Creator $15·60; each as monthly sub + one-time top-up; no Unlimited; LemonSqueezy.**
+- **Paid users always deduct credits** (retire Unlimited / deduct bypass).
+- **Cancel = not v1.**
 
 ---
 
@@ -325,3 +402,5 @@ Resolved (2026-08-24):
 - Shotstack spend → $0 for renders.
 - p95 time-to-MP4 acceptable for ~45s clips (target: document measured baseline after stub).
 - Final-fail rate < X% after retries; manual retry recovery tracked in logs.
+- Starter vs Creator checkout mix from paywall; credit exhaustion → top-up or renew (track in Lemon).
+- OpenAI TTS+script spend stays well below revenue at Starter ~3/$ and Creator ~4/$ (15 or 60 renders per paid pack).

@@ -5,6 +5,7 @@ import CreatorWorkspace from "@/components/CreatorWorkspace";
 vi.mock("@clerk/nextjs", () => ({
   SignInButton: ({ children }) => children,
   UserButton: () => null,
+  useAuth: () => ({ userId: "user_test" }),
 }));
 
 function mockApiResponses() {

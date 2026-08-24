@@ -71,20 +71,16 @@ export async function ensureUserProfile(clerkUserId) {
   return created;
 }
 
+/** True when the user has at least one spendable credit. */
 export function canGenerate(user) {
-  if (user.is_premium) return true;
   return Number(user.free_credits_remaining) > 0;
 }
 
 /**
- * Atomically reserve one free credit (enqueue-time). Premium unchanged.
+ * Atomically reserve one credit at enqueue time.
  * Throws with code PAYWALL if no credits left.
  */
 export async function deductCreditIfNeeded(user) {
-  if (user.is_premium) {
-    return { ...user, free_credits_remaining: user.free_credits_remaining };
-  }
-
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase.rpc("reserve_free_credit", {
     p_user_id: user.id,
@@ -96,7 +92,7 @@ export async function deductCreditIfNeeded(user) {
   }
 
   if (!data) {
-    const err = new Error("Free credits exhausted. Upgrade to continue generating.");
+    const err = new Error("Credits exhausted. Upgrade or top up to continue generating.");
     err.code = "PAYWALL_REQUIRED";
     throw err;
   }
@@ -110,7 +106,77 @@ export async function deductCreditIfNeeded(user) {
 }
 
 /**
- * Refund one free credit for a terminal failed job (idempotent via credit_refunded).
+ * Add credits (LemonSqueezy grant). Amount must be positive.
+ * @param {string} clerkUserId
+ * @param {number} amount
+ * @param {{ markSubscribed?: boolean }} [opts]
+ */
+export async function grantCreditsForClerkUser(clerkUserId, amount, opts = {}) {
+  const n = Math.floor(Number(amount));
+  if (!clerkUserId || !Number.isFinite(n) || n <= 0) {
+    throw new Error("Invalid credit grant.");
+  }
+
+  const profile = await ensureUserProfile(clerkUserId);
+  const supabase = getSupabaseAdmin();
+
+  const { data, error } = await supabase.rpc("grant_credits", {
+    p_user_id: profile.id,
+    p_amount: n,
+  });
+
+  if (error) {
+    console.error("Supabase grant_credits error:", error);
+    throw new Error("Failed to grant credits.");
+  }
+
+  if (!data) {
+    throw new Error("User not found for credit grant.");
+  }
+
+  if (opts.markSubscribed) {
+    const { error: premiumError } = await supabase
+      .from("users")
+      .update({ is_premium: true, updated_at: new Date().toISOString() })
+      .eq("id", profile.id);
+
+    if (premiumError) {
+      console.error("mark subscribed error:", premiumError);
+    } else {
+      data.is_premium = true;
+    }
+  }
+
+  return {
+    id: data.id,
+    clerk_user_id: data.clerk_user_id,
+    free_credits_remaining: data.free_credits_remaining,
+    is_premium: data.is_premium,
+  };
+}
+
+/** Clear subscribed badge (credits kept). */
+export async function clearSubscribedFlag(clerkUserId) {
+  if (!clerkUserId) return null;
+  const profile = await ensureUserProfile(clerkUserId);
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("users")
+    .update({ is_premium: false, updated_at: new Date().toISOString() })
+    .eq("id", profile.id)
+    .select(PROFILE_COLUMNS)
+    .single();
+
+  if (error) {
+    console.error("clearSubscribedFlag error:", error);
+    throw new Error("Failed to update subscription flag.");
+  }
+
+  return data;
+}
+
+/**
+ * Refund one credit for a terminal failed job (idempotent via credit_refunded).
  */
 export async function refundCreditForFailedJob(video) {
   if (!video?.id || !video?.user_id) return null;
@@ -136,19 +202,6 @@ export async function refundCreditForFailedJob(video) {
   }
 
   if (!marked) return null;
-
-  const { data: userRow, error: userError } = await supabase
-    .from("users")
-    .select("id, is_premium")
-    .eq("id", marked.user_id)
-    .single();
-
-  if (userError) {
-    console.error("refund user load error:", userError);
-    throw new Error("Failed to load user for credit refund.");
-  }
-
-  if (userRow.is_premium) return null;
 
   const { data, error } = await supabase.rpc("refund_free_credit", {
     p_user_id: marked.user_id,

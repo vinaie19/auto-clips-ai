@@ -52,5 +52,6 @@ comment on column public.videos.payload is 'Render inputs: script, pexelsUrls, t
 alter table public.users enable row level security;
 alter table public.videos enable row level security;
 
--- See supabase/migrations/20260824100000_render_queue.sql for:
--- claim_render_job, reserve_free_credit, refund_free_credit
+-- See supabase/migrations/ for:
+-- claim_render_job, reserve_free_credit, refund_free_credit, grant_credits
+-- (metered credits: no is_premium bypass on reserve/refund)

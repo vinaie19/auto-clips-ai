@@ -224,14 +224,6 @@ async function refundIfNeeded(supabase, video) {
   if (markError) throw markError;
   if (!marked) return;
 
-  const { data: userRow, error: userError } = await supabase
-    .from("users")
-    .select("is_premium")
-    .eq("id", marked.user_id)
-    .single();
-  if (userError) throw userError;
-  if (userRow.is_premium) return;
-
   const { error } = await supabase.rpc("refund_free_credit", {
     p_user_id: marked.user_id,
   });
