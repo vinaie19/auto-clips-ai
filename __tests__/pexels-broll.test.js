@@ -26,8 +26,8 @@ describe("pickOptimalMp4", () => {
 });
 
 describe("visual beat limits", () => {
-  it("caps continuity edits at 3–5 shots", () => {
-    expect(MIN_VISUAL_BEATS).toBe(3);
-    expect(MAX_VISUAL_BEATS).toBe(5);
+  it("allows more continuity edits per motif", () => {
+    expect(MIN_VISUAL_BEATS).toBe(4);
+    expect(MAX_VISUAL_BEATS).toBe(8);
   });
 });

@@ -1,11 +1,11 @@
 /**
- * Pexels B-roll: motif-continuous clips (few beats, reuse on miss).
+ * Pexels B-roll: one clip per spoken script line (line-bound beats).
  */
 
 const PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/v1/videos/search";
 
-export const MAX_VISUAL_BEATS = 5;
-export const MIN_VISUAL_BEATS = 3;
+export const MAX_VISUAL_BEATS = 8;
+export const MIN_VISUAL_BEATS = 4;
 
 /**
  * Prefer 720–1080p mp4; bias toward preferred orientation.
@@ -101,12 +101,12 @@ async function resolveUrlForQuery(apiKey, query, usedUrls, preferredOrientation)
 }
 
 /**
- * Map visual beat queries → Pexels URLs (ordered, continuity-first).
+ * Map line-bound visual beat queries → Pexels URLs (ordered).
  * On miss: reuse previous beat URL (never pad with unrelated stock).
  *
  * @param {string[]} queries
- * @param {{ weights?: number[], motif?: string, orientation?: string }} [opts]
- * @returns {Promise<{ pexelsVideoUrls: string[], visualBeats: { query: string, url: string, weight: number }[], motif: string | null }>}
+ * @param {{ weights?: number[], lines?: string[], motif?: string, orientation?: string }} [opts]
+ * @returns {Promise<{ pexelsVideoUrls: string[], visualBeats: { query: string, url: string, weight: number, line: string | null }[], motif: string | null }>}
  */
 export async function fetchBrollForQueries(queries, opts = {}) {
   const apiKey = process.env.PEXELS_API_KEY;
@@ -115,6 +115,7 @@ export async function fetchBrollForQueries(queries, opts = {}) {
   }
 
   const weights = Array.isArray(opts.weights) ? opts.weights : [];
+  const lines = Array.isArray(opts.lines) ? opts.lines : [];
   const motif = typeof opts.motif === "string" ? opts.motif : null;
   const preferredOrientation =
     opts.orientation === "landscape" ||
@@ -161,9 +162,12 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     if (url) {
       lastGoodUrl = url;
       const weight = Number(weights[i]);
+      const line =
+        typeof lines[i] === "string" && lines[i].trim() ? lines[i].trim() : null;
       visualBeats.push({
         query,
         url,
+        line,
         weight: Number.isFinite(weight) && weight > 0 ? weight : 1,
       });
     }
@@ -179,6 +183,7 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     visualBeats.push({
       query: last.query,
       url: lastGoodUrl,
+      line: last.line,
       weight: last.weight,
     });
   }

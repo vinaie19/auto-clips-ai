@@ -720,10 +720,11 @@ export default function CreatorWorkspace() {
         aspectRatio,
       });
 
-      // Ready for the next prompt while this job renders in the background.
+      // Clear the form for the next run, then show this job on Videos.
       setTopic("");
       setLoaderText("");
       setIsGenerating(false);
+      openVideo(videoId);
 
       const statusUrl =
         data.statusUrl ||

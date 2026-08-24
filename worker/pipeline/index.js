@@ -101,7 +101,15 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
 
       const beatCount = clipPaths.length;
       const beatWeights = Array.isArray(payload.visualBeats)
-        ? payload.visualBeats.map((b) => Number(b?.weight) || 1)
+        ? payload.visualBeats.map((b) => {
+            const w = Number(b?.weight);
+            if (Number.isFinite(w) && w > 0) return w;
+            const lineWords = String(b?.line || "")
+              .trim()
+              .split(/\s+/)
+              .filter(Boolean).length;
+            return Math.max(1, lineWords || 1);
+          })
         : null;
       const segmentDurations = computeSegmentDurations(duration, beatCount, {
         weights:

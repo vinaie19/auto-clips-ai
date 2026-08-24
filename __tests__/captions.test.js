@@ -11,6 +11,19 @@ describe("chunkIntoPunchyBlocks", () => {
     expect(blocks.length).toBeGreaterThan(1);
     expect(blocks.join(" ")).toContain("one");
   });
+
+  it("does not glue the end of one action onto the next after and", () => {
+    const blocks = chunkIntoPunchyBlocks(
+      "Whisk the eggs until they are blended and heat the pan.",
+      3
+    );
+    const joined = blocks.map((b) => b.toLowerCase());
+    expect(joined.some((b) => b.includes("blended") && b.includes("heat"))).toBe(
+      false
+    );
+    expect(joined.some((b) => b.includes("blended"))).toBe(true);
+    expect(joined.some((b) => b.includes("heat"))).toBe(true);
+  });
 });
 
 describe("computeCaptionTimings", () => {

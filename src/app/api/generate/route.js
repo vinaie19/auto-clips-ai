@@ -49,11 +49,21 @@ async function draftScript(topic, tone, targetDurationSeconds) {
       messages: [
         {
           role: "system",
-          content: `You write punchy short-form video scripts for about ${durationMeta.seconds} seconds of spoken narration (~${durationMeta.wordRange} words). Return clean plain text only — no markdown, no bullet points, no quotes, no labels, no stage directions.`,
+          content: `You write punchy short-form video scripts for about ${durationMeta.seconds} seconds of spoken narration (~${durationMeta.wordRange} words).
+
+Hard rules:
+- Write exactly 4 to 8 short sentences (each ends with . ! or ?).
+- Prefer one clear action or image per sentence (easier to match B-roll).
+- Every sentence must be filmable: name concrete objects, places, hands, or actions a stock camera can show.
+- Do NOT write abstract-only lines (success, mindset, growth, vibes, innovation) unless tied to a visible action.
+- Return clean plain text only — no markdown, no bullets, no quotes, no labels, no stage directions.`,
         },
         {
           role: "user",
-          content: `Topic/niche: ${topic}\nTone: ${tone}. ${toneGuide}\nTarget length: ${durationMeta.seconds} seconds (~${durationMeta.wordRange} spoken words) across 3–6 short sentences.`,
+          content: `Topic/niche: ${topic}
+Tone: ${tone}. ${toneGuide}
+Target length: ${durationMeta.seconds} seconds (~${durationMeta.wordRange} spoken words).
+Write 4–8 short filmable sentences that a vertical B-roll video can illustrate line by line.`,
         },
       ],
     }),
@@ -132,13 +142,14 @@ export async function POST(request) {
       );
     }
 
-    // 1) Script  2) Motif + 3–5 continuity shots  3) Pexels per shot
+    // 1) Filmable script  2) One B-roll query per spoken line  3) Pexels per beat
     const script = await draftScript(topic, tone, targetDurationSeconds);
     const visualPlan = await planVisualBeats(script, topic);
     const { pexelsVideoUrls, visualBeats } = await fetchBrollForQueries(
       visualPlan.queries,
       {
         weights: visualPlan.weights,
+        lines: visualPlan.lines,
         motif: visualPlan.motif,
         orientation: ASPECT_RATIOS[aspectRatio]?.orientation,
       }
@@ -166,6 +177,7 @@ export async function POST(request) {
       pexelsVideoUrls,
       visualBeats,
       visualQueries: visualPlan.queries,
+      visualLines: visualPlan.lines,
       visualMotif: visualPlan.motif,
       visualAvoid: visualPlan.avoid,
       tone,
@@ -221,6 +233,7 @@ export async function POST(request) {
       visualBeats: visualBeats.map((b) => ({
         query: b.query,
         weight: b.weight,
+        line: b.line || null,
       })),
       freeCreditsRemaining: updatedProfile.free_credits_remaining,
       isPremium: updatedProfile.is_premium,

@@ -62,22 +62,67 @@ function formatAssTime(seconds) {
   return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
 
-export function chunkIntoPunchyBlocks(script, preferredWords = 3) {
-  const words = String(script)
-    .replace(/[^\w\s'’-]/g, " ")
-    .split(/\s+/)
+/**
+ * Split narration into clauses so captions never glue the end of one action
+ * onto the start of the next (e.g. "blended and heat").
+ */
+export function splitCaptionClauses(script) {
+  const text = String(script || "").trim();
+  if (!text) return [];
+
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
     .filter(Boolean);
 
-  const blocks = [];
-  for (let i = 0; i < words.length; ) {
-    const remaining = words.length - i;
-    let take = preferredWords;
-    if (remaining === 4) take = 2;
-    else if (remaining < preferredWords) take = remaining;
-    else if (remaining === preferredWords + 1) take = 2;
+  const clauses = [];
+  for (const sentence of sentences) {
+    const parts = sentence
+      .split(/\s+(?:and|then|but|so|or)\s+|,\s+|;\s+|—\s*|–\s*/i)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length > 0) clauses.push(...parts);
+    else clauses.push(sentence);
+  }
 
-    blocks.push(words.slice(i, i + take).join(" "));
-    i += take;
+  return clauses.length > 0 ? clauses : [text];
+}
+
+/**
+ * Punchy caption blocks that respect clause boundaries.
+ * Never straddles "…blended and heat…".
+ * @param {string} script
+ * @param {number} [preferredWords=3]
+ */
+export function chunkIntoPunchyBlocks(script, preferredWords = 3) {
+  const pref = Math.max(2, Math.min(4, Number(preferredWords) || 3));
+  const clauses = splitCaptionClauses(script);
+  const blocks = [];
+
+  for (const clause of clauses) {
+    const words = String(clause)
+      .replace(/[^\w\s'’-]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+
+    if (words.length === 0) continue;
+
+    // Short clause → keep as one caption (reads as a phrase).
+    if (words.length <= pref + 1) {
+      blocks.push(words.join(" "));
+      continue;
+    }
+
+    for (let i = 0; i < words.length; ) {
+      const remaining = words.length - i;
+      let take = pref;
+      if (remaining <= pref) take = remaining;
+      else if (remaining === pref + 1) take = pref - 1; // avoid a 1-word orphan
+      else if (remaining === pref + 2) take = Math.ceil(remaining / 2);
+
+      blocks.push(words.slice(i, i + take).join(" "));
+      i += take;
+    }
   }
 
   return blocks.length > 0 ? blocks : [String(script).trim()].filter(Boolean);
