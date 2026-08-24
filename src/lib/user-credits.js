@@ -106,7 +106,7 @@ export async function deductCreditIfNeeded(user) {
 }
 
 /**
- * Add credits (LemonSqueezy grant). Amount must be positive.
+ * Add credits (Paddle grant). Amount must be positive.
  * @param {string} clerkUserId
  * @param {number} amount
  * @param {{ markSubscribed?: boolean }} [opts]

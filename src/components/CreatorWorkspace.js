@@ -1,11 +1,8 @@
 "use client";
 
 import { SignInButton, UserButton, useAuth } from "@clerk/nextjs";
-import {
-  BILLING_PACKS,
-  getCheckoutBases,
-  withCheckoutUser,
-} from "@/lib/billing-plans";
+import { BILLING_PACKS, getPaddlePriceIds } from "@/lib/billing-plans";
+import { isPaddleConfigured, openPaddleCheckout } from "@/lib/paddle-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SUBTITLE_THEMES,
@@ -317,11 +314,8 @@ function NavIcon({ name }) {
 
 export default function CreatorWorkspace() {
   const { userId: clerkUserId } = useAuth();
-  const checkouts = getCheckoutBases();
-  const checkoutStarterSub = withCheckoutUser(checkouts.starterSub, clerkUserId);
-  const checkoutCreatorSub = withCheckoutUser(checkouts.creatorSub, clerkUserId);
-  const checkoutStarterTopup = withCheckoutUser(checkouts.starterTopup, clerkUserId);
-  const checkoutCreatorTopup = withCheckoutUser(checkouts.creatorTopup, clerkUserId);
+  const paddlePrices = getPaddlePriceIds();
+  const paddleReady = isPaddleConfigured();
 
   const [topic, setTopic] = useState("");
   const [subtitleTheme, setSubtitleTheme] = useState("Viral Yellow");
@@ -346,6 +340,28 @@ export default function CreatorWorkspace() {
   const previewAudioRef = useRef(null);
   const previewUrlRef = useRef(null);
   const mainRef = useRef(null);
+
+  const startCheckout = useCallback(
+    async (priceId) => {
+      const id = String(priceId || "").trim();
+      if (!id) {
+        setShowPaywall(true);
+        return;
+      }
+      if (!paddleReady) {
+        setError(
+          "Billing is not configured yet. Set NEXT_PUBLIC_PADDLE_CLIENT_TOKEN and price ids."
+        );
+        return;
+      }
+      try {
+        await openPaddleCheckout(id, clerkUserId);
+      } catch (err) {
+        setError(err?.message || "Could not open checkout.");
+      }
+    },
+    [clerkUserId, paddleReady]
+  );
 
   const isBusy = isGenerating || isPolling;
 
@@ -744,20 +760,19 @@ export default function CreatorWorkspace() {
               {credits ?? "—"} credit{credits === 1 ? "" : "s"} left
               {isPremium ? " · subscribed" : ""}
             </div>
-            <a
-              href={checkoutStarterSub !== "#" ? checkoutStarterSub : "#pricing"}
-              target={checkoutStarterSub !== "#" ? "_blank" : undefined}
-              rel="noopener noreferrer"
+            <button
+              type="button"
               className="hidden rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-3 py-1.5 text-xs font-semibold text-white sm:inline-flex"
-              onClick={(e) => {
-                if (checkoutStarterSub === "#") {
-                  e.preventDefault();
+              onClick={() => {
+                if (paddlePrices.starterSub) {
+                  void startCheckout(paddlePrices.starterSub);
+                } else {
                   setShowPaywall(true);
                 }
               }}
             >
               Get credits
-            </a>
+            </button>
             <UserButton afterSignOutUrl="/" />
           </div>
         </div>
@@ -1294,38 +1309,34 @@ export default function CreatorWorkspace() {
               top-ups.
             </p>
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              <a
-                href={checkoutStarterSub}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => void startCheckout(paddlePrices.starterSub)}
                 className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
               >
                 Starter ${BILLING_PACKS.starter.priceUsd}/mo
-              </a>
-              <a
-                href={checkoutCreatorSub}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                type="button"
+                onClick={() => void startCheckout(paddlePrices.creatorSub)}
                 className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white"
               >
                 Creator ${BILLING_PACKS.creator.priceUsd}/mo
-              </a>
-              <a
-                href={checkoutStarterTopup}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                type="button"
+                onClick={() => void startCheckout(paddlePrices.starterTopup)}
                 className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
               >
                 Top up +{BILLING_PACKS.starter.credits} · ${BILLING_PACKS.starter.priceUsd}
-              </a>
-              <a
-                href={checkoutCreatorTopup}
-                target="_blank"
-                rel="noopener noreferrer"
+              </button>
+              <button
+                type="button"
+                onClick={() => void startCheckout(paddlePrices.creatorTopup)}
                 className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
               >
                 Top up +{BILLING_PACKS.creator.credits} · ${BILLING_PACKS.creator.priceUsd}
-              </a>
+              </button>
             </div>
             <button
               type="button"

@@ -1,66 +1,88 @@
 import { describe, expect, it } from "vitest";
 import {
   BILLING_PACKS,
-  buildTopupVariantSet,
-  creditsForVariantId,
+  buildTopupPriceSet,
+  creditsForPriceId,
   extractClerkUserId,
-  extractVariantId,
-  withCheckoutUser,
+  extractPriceIds,
 } from "@/lib/billing-plans";
+import { verifyPaddleSignature } from "@/lib/paddle-webhook";
+import crypto from "node:crypto";
 
-describe("billing-plans", () => {
+describe("billing-plans (Paddle)", () => {
   it("exposes locked pack sizes", () => {
     expect(BILLING_PACKS.starter.credits).toBe(15);
     expect(BILLING_PACKS.creator.credits).toBe(60);
   });
 
-  it("maps variant ids to credits from env", () => {
+  it("maps price ids to credits from env", () => {
     const env = {
-      LEMON_VARIANT_STARTER: "111",
-      LEMON_VARIANT_STARTER_TOPUP: "112",
-      LEMON_VARIANT_CREATOR: "221",
-      LEMON_VARIANT_CREATOR_TOPUP: "222",
+      NEXT_PUBLIC_PADDLE_PRICE_STARTER: "pri_starter",
+      NEXT_PUBLIC_PADDLE_PRICE_STARTER_TOPUP: "pri_starter_top",
+      NEXT_PUBLIC_PADDLE_PRICE_CREATOR: "pri_creator",
+      NEXT_PUBLIC_PADDLE_PRICE_CREATOR_TOPUP: "pri_creator_top",
     };
-    expect(creditsForVariantId("111", env)).toBe(15);
-    expect(creditsForVariantId("112", env)).toBe(15);
-    expect(creditsForVariantId("221", env)).toBe(60);
-    expect(creditsForVariantId("222", env)).toBe(60);
-    expect(creditsForVariantId("999", env)).toBeNull();
+    expect(creditsForPriceId("pri_starter", env)).toBe(15);
+    expect(creditsForPriceId("pri_starter_top", env)).toBe(15);
+    expect(creditsForPriceId("pri_creator", env)).toBe(60);
+    expect(creditsForPriceId("pri_creator_top", env)).toBe(60);
+    expect(creditsForPriceId("pri_unknown", env)).toBeNull();
   });
 
-  it("builds top-up variant set", () => {
-    const set = buildTopupVariantSet({
-      LEMON_VARIANT_STARTER_TOPUP: "112",
-      LEMON_VARIANT_CREATOR_TOPUP: "222,223",
+  it("builds top-up price set", () => {
+    const set = buildTopupPriceSet({
+      NEXT_PUBLIC_PADDLE_PRICE_STARTER_TOPUP: "pri_a",
+      NEXT_PUBLIC_PADDLE_PRICE_CREATOR_TOPUP: "pri_b,pri_c",
     });
-    expect(set.has("112")).toBe(true);
-    expect(set.has("222")).toBe(true);
-    expect(set.has("223")).toBe(true);
-    expect(set.has("111")).toBe(false);
+    expect(set.has("pri_a")).toBe(true);
+    expect(set.has("pri_b")).toBe(true);
+    expect(set.has("pri_c")).toBe(true);
+    expect(set.has("pri_starter")).toBe(false);
   });
 
-  it("appends clerk user id to checkout URL", () => {
-    const url = withCheckoutUser(
-      "https://autoclips.lemonsqueezy.com/checkout/buy/abc",
-      "user_123"
-    );
-    expect(url).toContain("checkout%5Bcustom%5D%5Buser_id%5D=user_123");
-  });
-
-  it("extracts variant and user from webhook payload", () => {
-    const payload = {
-      meta: {
-        event_name: "order_created",
-        custom_data: { user_id: "clerk_abc" },
-      },
-      data: {
-        attributes: {
-          status: "paid",
-          first_order_item: { variant_id: 112 },
-        },
-      },
+  it("extracts price ids and user from transaction payload", () => {
+    const data = {
+      custom_data: { user_id: "clerk_abc" },
+      items: [{ price: { id: "pri_starter_top" }, quantity: 1 }],
     };
-    expect(extractClerkUserId(payload)).toBe("clerk_abc");
-    expect(extractVariantId(payload)).toBe("112");
+    expect(extractClerkUserId(data)).toBe("clerk_abc");
+    expect(extractPriceIds(data)).toEqual(["pri_starter_top"]);
+  });
+});
+
+describe("verifyPaddleSignature", () => {
+  it("accepts a valid signature within the time window", () => {
+    const secret = "pdl_ntfset_test";
+    const rawBody = '{"event_type":"transaction.completed"}';
+    const ts = 1_700_000_000;
+    const h1 = crypto
+      .createHmac("sha256", secret)
+      .update(`${ts}:${rawBody}`)
+      .digest("hex");
+    expect(
+      verifyPaddleSignature(rawBody, `ts=${ts};h1=${h1}`, secret, {
+        nowSec: ts + 10,
+      })
+    ).toBe(true);
+  });
+
+  it("rejects wrong secrets and stale timestamps", () => {
+    const secret = "pdl_ntfset_test";
+    const rawBody = "{}";
+    const ts = 1_700_000_000;
+    const h1 = crypto
+      .createHmac("sha256", secret)
+      .update(`${ts}:${rawBody}`)
+      .digest("hex");
+    expect(
+      verifyPaddleSignature(rawBody, `ts=${ts};h1=${h1}`, "wrong", {
+        nowSec: ts,
+      })
+    ).toBe(false);
+    expect(
+      verifyPaddleSignature(rawBody, `ts=${ts};h1=${h1}`, secret, {
+        nowSec: ts + 10_000,
+      })
+    ).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 -- Metered credits for all users (no Unlimited / is_premium bypass on reserve/refund).
--- Add grant_credits for LemonSqueezy webhooks.
+-- Add grant_credits for Paddle webhooks.
 
 create or replace function public.reserve_free_credit(p_user_id uuid)
 returns public.users
@@ -77,7 +77,12 @@ end;
 $$;
 
 -- claim_render_job: refund on max-attempts without is_premium gate
-create or replace function public.claim_render_job(
+-- Must DROP first: Postgres cannot change return type via CREATE OR REPLACE
+-- (remote may still be `returns videos` vs `returns setof videos`).
+drop function if exists public.claim_render_job(text, integer);
+drop function if exists public.claim_render_job(text, int);
+
+create function public.claim_render_job(
   p_worker_id text,
   p_lease_seconds int default 180
 )
