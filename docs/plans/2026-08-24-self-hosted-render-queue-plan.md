@@ -4,11 +4,15 @@
 
 **Goal:** Replace Shotstack with a Postgres-backed render queue, always-on FFmpeg worker, automatic retries, and manual user retry — matching [`2026-08-24-self-hosted-render-queue-spec.md`](./2026-08-24-self-hosted-render-queue-spec.md).
 
-**Architecture:** Next.js owns auth, credits gates, script/Pexels, enqueue, status, manual retry. Worker owns claim/lease/TTS/FFmpeg/Storage/`done`. Queue = extended `videos` table. No Redis. No Flotorch multi-node graph.
+**Architecture:** Next.js owns auth, credits gates, script/Pexels, enqueue, status, manual retry. Worker owns claim/lease/TTS/FFmpeg/object-storage upload/`done`. Queue = extended `videos` table. No Redis. No Flotorch multi-node graph.
 
-**Tech stack:** Next.js 16, Supabase (Postgres + Storage), Clerk, FFmpeg (worker), Vitest, Playwright (as needed).
+**Tech stack:** Next.js 16 (Vercel), Supabase (Postgres + Auth; Storage for local/MVP only), **Cloudflare R2** for prod render MP4s, Clerk, FFmpeg worker on **AWS Lightsail**, Vitest, Playwright (as needed).
 
 **Spec:** `docs/plans/2026-08-24-self-hosted-render-queue-spec.md`
+
+**Worker hosting (locked):** Develop with local `node worker` / Docker. Ship production as an always-on process on a small **AWS Lightsail** Linux instance (Node + FFmpeg, concurrency 1). Next.js stays on Vercel. Not ECS/Fargate for v1.
+
+**Object storage (locked):** Local/MVP uploads to Supabase bucket `renders`. **Production uploads to Cloudflare R2** (10 GB free storage, **$0 egress**). App only stores the resulting public `video_url` string — no UI change when switching backends.
 
 ---
 
@@ -18,13 +22,15 @@
 
 **Step 1:** Choose TTS provider and map `Moody | Corporate | Cinematic` → voice ids.
 
-**Step 2:** Choose Storage bucket name (e.g. `renders`) and URL style (public vs signed).
+**Step 2:** Storage — local Supabase bucket `renders` (public); **prod = Cloudflare R2** (public base URL). Document env split (`STORAGE_BACKEND`).
 
 **Step 3:** Choose rollout: hard cut vs `RENDER_BACKEND=shotstack|self` flag (recommend **hard cut** if traffic is low; flag if you need soak).
 
 **Step 4:** Confirm worker as Node in `worker/` at repo root.
 
-**Done when:** Spec open questions answered in writing (edit the spec file).
+**Step 5:** Worker host is already locked (**AWS Lightsail**). Pick plan size (start 1–2 GB), region near users/Supabase, and how secrets are stored on the instance.
+
+**Done when:** Spec open questions 1–4 answered; Lightsail size/region noted in worker README.
 
 ---
 
@@ -166,7 +172,7 @@ Also implement:
 
 - Modify: `src/app/api/generate/route.js`
 - Modify: `src/app/api/generate/status/route.js`
-- Modify: `src/lib/user-credits.js` (if needed for refunds — v1 deduct-on-done only)
+- Modify: `src/lib/user-credits.js` (atomic reserve + new refund helper)
 
 **Step 1: `POST /api/generate`**
 
@@ -189,7 +195,7 @@ Also implement:
 ```
 
 - After insert, optionally `update render_id = id`.
-- **Do not** call `deductCreditIfNeeded`.
+- **Keep** calling `deductCreditIfNeeded` to reserve the credit. Replace its read-modify-write (`src/lib/user-credits.js`) with an atomic guarded decrement: `UPDATE users SET free_credits_remaining = free_credits_remaining - 1 WHERE id = $1 AND free_credits_remaining > 0 RETURNING *` via RPC; zero rows → 403 PAYWALL.
 - Return `{ renderId: videoRow.id, videoId, statusUrl: `/api/generate/status?id=${id}`, script, freeCreditsRemaining, … }`.
 
 **Step 2: `GET /api/generate/status`**
@@ -243,7 +249,7 @@ while true:
   try:
     // stub: upload tiny placeholder or write a fixture mp4 to Storage
     completeJob(...)
-    deductCreditIfNeeded for job.user_id (idempotent)
+    // credit already reserved at enqueue — no credit work on success
   catch err:
     failJob(retryable?)
 ```
@@ -262,7 +268,7 @@ while true:
 
 - Create: `worker/pipeline/*` (tts, download, ffmpeg, upload)
 - Modify: worker entry to call pipeline
-- Docker: `worker/Dockerfile` with `ffmpeg` installed
+- Docker: `worker/Dockerfile` with `ffmpeg` installed (optional; same image can run on Lightsail)
 
 **Step 1: TTS** — call chosen provider; write `audio.mp3` to job temp dir.
 
@@ -272,24 +278,28 @@ while true:
 
 **Step 4: FFmpeg** — scale/crop 9:16, concat/xfade or simple concat, burn captions, mux TTS, output `out.mp4` ~45s HD.
 
-**Step 5: Upload** — Supabase Storage; set `video_url` (and optional thumbnail via ffmpeg frame grab).
+**Step 5: Upload** — abstract upload behind a small helper (`uploadRender(localPath, key)`):
+- Default / local: Supabase Storage bucket `renders`
+- Prod path implemented in Task 8c: Cloudflare R2 via S3-compatible API
+
+Set `video_url` (and optional thumbnail via ffmpeg frame grab).
 
 **Step 6: Temp cleanup** — always `rm -rf` job dir in `finally`.
 
-**Done when:** Real topic generate produces a playable vertical MP4 end-to-end on a machine with FFmpeg.
+**Done when:** Real topic generate produces a playable vertical MP4 end-to-end on a machine with FFmpeg (Supabase Storage OK for this task).
 
 ---
 
-### Task 7: Credits on done + frontend Retry UX
+### Task 7: Credit refund on final fail + frontend Retry UX
 
 **Files:**
 
-- Modify: worker complete path → deduct once
+- Modify: worker fail path → refund once
 - Modify: `src/components/CreatorWorkspace.js`
 - Modify: `src/lib/user-credits.js` if adding `deductCreditForUserId(userId)` for worker/shared use
 - Tests: credit edge cases
 
-**Step 1:** On `done` transition only: if not premium, decrement `free_credits_remaining` by 1 with `where free_credits_remaining > 0` (or unconditional for already-checked generate — still guard concurrency).
+**Step 1:** On terminal `failed` transition only: if not premium, increment `free_credits_remaining` by 1 (refund the enqueue-time reserve). Idempotency: refund only when the `claimed/running → failed` UPDATE actually returns a row.
 
 **Step 2:** UI status mapping:
 
@@ -316,11 +326,73 @@ while true:
 
 **Step 1:** Grep and remove.
 
-**Step 2:** Document local full stack: `pnpm/npm run dev` + `node worker` + Supabase.
+**Step 2:** Document local full stack: `pnpm/npm run dev` + `node worker` (or Docker) + Supabase.
 
 **Step 3:** Ensure unit tests pass in CI without worker/FFmpeg (mock RPC).
 
 **Done when:** `rg -i shotstack` finds only historical docs/spec mentions (or none in `src/`).
+
+---
+
+### Task 8b: Deploy worker to AWS Lightsail
+
+**Files:**
+
+- Create/update: `worker/README.md` (Lightsail section)
+- Optional: `worker/Dockerfile` + compose for the instance
+- Optional: `worker/deploy/autoclips-worker.service` (systemd unit)
+
+**Step 1:** Create a Lightsail Linux instance (Ubuntu LTS), open only SSH (no public HTTP required for the worker).
+
+**Step 2:** Install Node (or Docker) + `ffmpeg`. Clone/deploy `worker/`; set env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, TTS keys, `WORKER_ID`, lease knobs, plus **R2** vars from Task 8c.
+
+**Step 3:** Run under **systemd** or **pm2** so the claim loop restarts on crash/reboot. Cap concurrency to **1**.
+
+**Step 4:** Verify logs show claim loop idle; enqueue one staging job from the Vercel app; confirm `done` + **R2** `video_url` (not Supabase Storage).
+
+**Step 5:** Document instance size, region, restart procedure, and how to pull updates in `worker/README.md`.
+
+**Done when:** Staging/prod Lightsail worker stays up, completes real jobs against Supabase (queue), and serves MP4s from **R2**. Vercel unchanged for Next.js.
+
+---
+
+### Task 8c: Production object storage — Cloudflare R2
+
+**Files:**
+
+- Modify: `worker/pipeline/upload.js` (or equivalent) — support `STORAGE_BACKEND=r2`
+- Modify: `worker/.env.example`, `worker/README.md`
+- Optional: `__tests__` mock for R2 put + public URL shape
+- Do **not** require R2 for local `npm run test` / local worker smoke (keep Supabase default)
+
+**Why:** Supabase Storage is fine for MVP, but video views consume **egress** (Free 5 GB / Pro 250 GB then ~$0.09/GB). R2 gives **10 GB free storage** and **$0 egress** — correct for Autoclips playback.
+
+**Step 1:** Create Cloudflare R2 bucket (e.g. `autoclips-renders`). Enable public access via R2.dev subdomain **or** custom domain.
+
+**Step 2:** Create R2 API token with Object Read & Write on that bucket. Note Account ID + Access Key + Secret.
+
+**Step 3:** Worker upload via S3-compatible client (`@aws-sdk/client-s3` or equivalent):
+
+- Endpoint: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
+- `PutObject` with `Content-Type: video/mp4`
+- Public URL: `${R2_PUBLIC_BASE_URL}/${key}` → write to `videos.video_url`
+
+**Step 4:** Env on Lightsail:
+
+```
+STORAGE_BACKEND=r2
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET=autoclips-renders
+R2_PUBLIC_BASE_URL=https://pub-….r2.dev
+```
+
+Local default remains `STORAGE_BACKEND=supabase` (or unset).
+
+**Step 5:** Smoke: one staging render → `video_url` hosts on R2; browser plays without Supabase Storage.
+
+**Done when:** Prod/staging Lightsail uses R2 only for new renders; README documents both backends; historical Supabase URLs still play if present (no forced migration).
 
 ---
 
@@ -343,14 +415,14 @@ while true:
 ## Suggested implementation order
 
 ```
-Task 0 → 1 → 2 → 3 → 4 → 5 → 7 (UI can poll stub)
+Task 0 → 1 → 2 → 3 → 4 → 5 → 7 (UI can poll stub locally)
               ↓
-            Task 6 (real FFmpeg)
+            Task 6 (real FFmpeg, local / Supabase Storage)
               ↓
-            Task 8 → 9
+            Task 8 → 8c (R2 upload) → 8b (Lightsail + STORAGE_BACKEND=r2) → 9
 ```
 
-Ship stub worker early so API/UI can be developed without waiting on FFmpeg polish.
+Ship stub worker early so API/UI can be developed without waiting on FFmpeg polish. Local first (Supabase Storage OK). Before/at Lightsail prod: switch uploads to **R2**.
 
 ---
 
@@ -358,8 +430,10 @@ Ship stub worker early so API/UI can be developed without waiting on FFmpeg poli
 
 - [ ] All spec acceptance criteria pass
 - [ ] Shotstack not required for generate/status
-- [ ] Worker Dockerfile + README
+- [ ] Worker Dockerfile/README (+ systemd or pm2 notes)
+- [ ] Lightsail worker deployed and completing jobs
+- [ ] Prod/staging uploads to **Cloudflare R2**; `video_url` is an R2 (or custom-domain) HTTPS URL
 - [ ] Migration applied to prod Supabase
-- [ ] Credits: deduct-on-done verified
+- [ ] Credits: reserve-at-enqueue + refund-on-fail verified
 - [ ] Manual Retry in UI
 - [ ] Spec + this plan left in `docs/plans/` for future agents

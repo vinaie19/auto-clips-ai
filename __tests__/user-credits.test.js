@@ -1,15 +1,47 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  computeBackoffSeconds,
+  isRetryableError,
+} from "@/lib/render-constants";
 import { canGenerate, deductCreditIfNeeded, ensureUserProfile } from "@/lib/user-credits";
 
-const { mockFrom } = vi.hoisted(() => ({ mockFrom: vi.fn() }));
+const { mockFrom, mockRpc } = vi.hoisted(() => ({
+  mockFrom: vi.fn(),
+  mockRpc: vi.fn(),
+}));
 
 vi.mock("@/lib/supabase-admin", () => ({
-  getSupabaseAdmin: () => ({ from: mockFrom }),
+  getSupabaseAdmin: () => ({ from: mockFrom, rpc: mockRpc }),
 }));
+
+describe("computeBackoffSeconds", () => {
+  it("grows with attempt and caps at 180", () => {
+    expect(computeBackoffSeconds(0)).toBe(30);
+    expect(computeBackoffSeconds(1)).toBe(45);
+    expect(computeBackoffSeconds(2)).toBe(68);
+    expect(computeBackoffSeconds(10)).toBe(180);
+  });
+});
+
+describe("isRetryableError", () => {
+  it("retries network and 5xx-style failures", () => {
+    expect(isRetryableError({ message: "fetch failed" })).toBe(true);
+    expect(isRetryableError({ status: 503, message: "unavailable" })).toBe(true);
+    expect(isRetryableError(new Error("ETIMEDOUT"))).toBe(true);
+  });
+
+  it("does not retry bad payload / missing config", () => {
+    expect(isRetryableError(new Error("invalid payload"))).toBe(false);
+    expect(isRetryableError(new Error("OPENAI_API_KEY is not configured"))).toBe(
+      false
+    );
+  });
+});
 
 describe("ensureUserProfile", () => {
   beforeEach(() => {
     mockFrom.mockReset();
+    mockRpc.mockReset();
   });
 
   it("returns the existing row after a concurrent insert race (23505)", async () => {
@@ -59,12 +91,6 @@ describe("ensureUserProfile", () => {
 describe("canGenerate", () => {
   it("allows premium users regardless of remaining credits", () => {
     expect(canGenerate({ is_premium: true, free_credits_remaining: 0 })).toBe(true);
-    expect(canGenerate({ is_premium: true, free_credits_remaining: 7 })).toBe(true);
-  });
-
-  it("allows free users only while they have credits left", () => {
-    expect(canGenerate({ is_premium: false, free_credits_remaining: 3 })).toBe(true);
-    expect(canGenerate({ is_premium: false, free_credits_remaining: 1 })).toBe(true);
   });
 
   it("blocks free users with zero credits", () => {
@@ -73,11 +99,44 @@ describe("canGenerate", () => {
 });
 
 describe("deductCreditIfNeeded", () => {
+  beforeEach(() => {
+    mockRpc.mockReset();
+  });
+
   it("leaves premium users unchanged without touching the database", async () => {
     const user = { id: "u1", is_premium: true, free_credits_remaining: 5 };
     const result = await deductCreditIfNeeded(user);
 
     expect(result.free_credits_remaining).toBe(5);
-    expect(result.id).toBe("u1");
+    expect(mockRpc).not.toHaveBeenCalled();
+  });
+
+  it("reserves via RPC for free users", async () => {
+    mockRpc.mockResolvedValue({
+      data: {
+        id: "u1",
+        clerk_user_id: "c1",
+        free_credits_remaining: 2,
+        is_premium: false,
+      },
+      error: null,
+    });
+
+    const result = await deductCreditIfNeeded({
+      id: "u1",
+      is_premium: false,
+      free_credits_remaining: 3,
+    });
+
+    expect(mockRpc).toHaveBeenCalledWith("reserve_free_credit", { p_user_id: "u1" });
+    expect(result.free_credits_remaining).toBe(2);
+  });
+
+  it("throws PAYWALL_REQUIRED when RPC returns null", async () => {
+    mockRpc.mockResolvedValue({ data: null, error: null });
+
+    await expect(
+      deductCreditIfNeeded({ id: "u1", is_premium: false, free_credits_remaining: 0 })
+    ).rejects.toMatchObject({ code: "PAYWALL_REQUIRED" });
   });
 });

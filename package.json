@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "worker:dev": "npm --prefix worker run dev",
+    "worker:start": "npm --prefix worker run start"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.8.0",

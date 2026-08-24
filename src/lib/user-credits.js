@@ -50,7 +50,6 @@ export async function ensureUserProfile(clerkUserId) {
     .single();
 
   if (insertError) {
-    // Concurrent ensureUserProfile: the other request already inserted this clerk id.
     if (insertError.code === "23505") {
       const { data: raced, error: retryError } = await selectProfileByClerkId(
         supabase,
@@ -78,7 +77,8 @@ export function canGenerate(user) {
 }
 
 /**
- * Deduct one free credit for non-premium users. Premium users are unlimited.
+ * Atomically reserve one free credit (enqueue-time). Premium unchanged.
+ * Throws with code PAYWALL if no credits left.
  */
 export async function deductCreditIfNeeded(user) {
   if (user.is_premium) {
@@ -86,18 +86,77 @@ export async function deductCreditIfNeeded(user) {
   }
 
   const supabase = getSupabaseAdmin();
-  const nextCredits = Math.max(0, Number(user.free_credits_remaining) - 1);
-
-  const { data, error } = await supabase
-    .from("users")
-    .update({ free_credits_remaining: nextCredits })
-    .eq("id", user.id)
-    .select("id, clerk_user_id, free_credits_remaining, is_premium")
-    .single();
+  const { data, error } = await supabase.rpc("reserve_free_credit", {
+    p_user_id: user.id,
+  });
 
   if (error) {
-    console.error("Supabase credit deduct error:", error);
+    console.error("Supabase credit reserve error:", error);
     throw new Error("Failed to deduct generation credit.");
+  }
+
+  if (!data) {
+    const err = new Error("Free credits exhausted. Upgrade to continue generating.");
+    err.code = "PAYWALL_REQUIRED";
+    throw err;
+  }
+
+  return {
+    id: data.id,
+    clerk_user_id: data.clerk_user_id,
+    free_credits_remaining: data.free_credits_remaining,
+    is_premium: data.is_premium,
+  };
+}
+
+/**
+ * Refund one free credit for a terminal failed job (idempotent via credit_refunded).
+ */
+export async function refundCreditForFailedJob(video) {
+  if (!video?.id || !video?.user_id) return null;
+  if (video.credit_refunded) return null;
+
+  const supabase = getSupabaseAdmin();
+
+  const { data: marked, error: markError } = await supabase
+    .from("videos")
+    .update({
+      credit_refunded: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", video.id)
+    .eq("credit_refunded", false)
+    .eq("status", "failed")
+    .select("id, user_id")
+    .maybeSingle();
+
+  if (markError) {
+    console.error("credit_refunded mark error:", markError);
+    throw new Error("Failed to mark credit refund.");
+  }
+
+  if (!marked) return null;
+
+  const { data: userRow, error: userError } = await supabase
+    .from("users")
+    .select("id, is_premium")
+    .eq("id", marked.user_id)
+    .single();
+
+  if (userError) {
+    console.error("refund user load error:", userError);
+    throw new Error("Failed to load user for credit refund.");
+  }
+
+  if (userRow.is_premium) return null;
+
+  const { data, error } = await supabase.rpc("refund_free_credit", {
+    p_user_id: marked.user_id,
+  });
+
+  if (error) {
+    console.error("Supabase credit refund error:", error);
+    throw new Error("Failed to refund generation credit.");
   }
 
   return data;

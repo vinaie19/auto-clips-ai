@@ -15,7 +15,7 @@ We want to **remove Shotstack** and run renders ourselves using:
 
 1. A **Postgres job table** (extend `videos`) as the queue — no Redis.
 2. Claim / lease / heartbeat / retry semantics inspired by Flotorch gateway’s orchestrator outbox (`FOR UPDATE SKIP LOCKED`, visibility timeout, expiry reclaim) — **without** copying the multi-node workflow graph.
-3. A **separate always-on worker** that runs TTS + FFmpeg (or Remotion later) and uploads to Supabase Storage.
+3. A **separate always-on worker on AWS Lightsail** that runs TTS + FFmpeg (or Remotion later) and uploads finished MP4s. **Local/MVP:** Supabase Storage bucket `renders`. **Production:** **Cloudflare R2** (free egress; 10 GB free storage). Next.js stays on Vercel.
 4. **Automatic retries** for transient failures and crash recovery.
 5. **Manual user retry** after a job reaches terminal `failed`.
 
@@ -68,9 +68,10 @@ Browser
   ├─ GET  /api/generate/status?id=… → SELECT videos status/url/error
   └─ POST /api/videos/:id/retry → re-queue failed row (credits check)
 
-Render worker (always-on process, not Next.js)
-  loop: CLAIM (SKIP LOCKED) → heartbeat → TTS → download → FFmpeg → Storage upload
+Render worker (always-on process on **AWS Lightsail**; Next.js stays on Vercel — not co-located for v1)
+  loop: CLAIM (SKIP LOCKED) → heartbeat → TTS → download → FFmpeg → object storage upload
         → done | schedule auto-retry | failed
+        (dev: Supabase Storage; prod: Cloudflare R2)
 ```
 
 **Queue source of truth:** `public.videos` row (or `render_jobs` FK to `videos` if we prefer separation; default is **extend `videos`**).
@@ -89,12 +90,14 @@ Render worker (always-on process, not Next.js)
 | Queue | Postgres table, no Redis | Matches Flotorch outbox idea; already on Supabase |
 | Job identity | `videos.id` is `renderId` for status URLs | Simplifies UI; drop Shotstack ids |
 | Render engine (v1) | FFmpeg in a Docker/worker process | Closest cost/control fit for stitch + burn-in captions |
-| TTS | External API (OpenAI / Polly / ElevenLabs — pick one in plan Task) | Same as today conceptually; not Shotstack TTS |
-| Storage | Supabase Storage bucket for MP4 (+ optional poster) | Already in stack |
-| Credits | **Deduct on `done`**; never deduct for auto-retries; manual retry uses same `canGenerate` check and deducts only on subsequent `done` | Avoid charging failed renders |
+| TTS | **OpenAI TTS** (`tts-1`); Moody→`onyx`, Corporate→`alloy`, Cinematic→`nova` | Already use OpenAI for scripts |
+| Storage | **Dev/MVP:** Supabase bucket **`renders`** (public). **Prod:** **Cloudflare R2** bucket (public via `r2.dev` or custom domain); `video_url` stores the public HTTPS URL | R2: 10 GB free + **$0 egress** — video views would burn Supabase egress quota; keep Supabase for Postgres/Auth only in prod |
+| Credits | **Reserve at enqueue** (existing `deductCreditIfNeeded`, made atomic), **refund one credit on terminal `failed`**; never deduct for auto-retries; manual retry uses same `canGenerate` check and reserves again on enqueue | Blocks parallel-generate abuse while failed renders stay free via refund |
 | Auto retry max | 3 attempts total (initial + 2 retries) | Align with Flotorch default `retry.max` |
 | Manual retry | Allowed only when `status = failed`; resets `attempts` to 0; same row id | No duplicate history spam |
-| Worker host | Separate always-on service with FFmpeg | Not serverless |
+| Worker host | **AWS Lightsail** (small Linux instance) for production; local `node worker` / Docker for development | Use AWS credits; simple VM + FFmpeg; not Vercel serverless; not ECS/Fargate for v1 |
+| App host | Next.js remains on **Vercel** | Worker is a separate always-on process; API/UI stay request/response |
+| Worker concurrency | **1** encode at a time on the Lightsail box | Avoids CPU/memory contention on a cheap instance |
 
 ### Schema (extend `videos`)
 
@@ -165,7 +168,7 @@ Changes:
 1. Still: auth, paywall (`canGenerate`), Pexels, script draft.
 2. **Do not** call Shotstack.
 3. Insert `videos` with `status: pending`, `payload: {…}`, `next_visible_at: now()`, `attempts: 0`.
-4. **Do not** call `deductCreditIfNeeded` here (credits on done).
+4. **Keep** calling `deductCreditIfNeeded` here to reserve the credit, but make the decrement atomic (guarded RPC — see plan Task 7).
 5. Return `{ renderId: video.id, videoId, statusUrl, script, … }`.
 
 #### `GET /api/generate/status?id=`
@@ -191,11 +194,11 @@ Separate package/folder e.g. `worker/` or `services/render-worker/`:
 
 1. Long-poll or tight loop claim via SQL (service role).
 2. Set `running`, heartbeat while working.
-3. Pipeline: TTS → download clips → FFmpeg template (9:16, captions from payload themes) → upload Storage → update `video_url`, `status=done`.
-4. On success: call credit deduct for non-premium owner (or Next-facing RPC/edge that deducts — prefer single place in `user-credits` invoked from a small secured internal path **or** worker uses service role to decrement with care).
+3. Pipeline: TTS → download clips → FFmpeg template (9:16, captions from payload themes) → upload object storage (Supabase Storage locally; **R2 in prod**) → update `video_url`, `status=done`.
+4. On success: nothing credit-related (reserved at enqueue). On terminal `failed`: refund one credit for non-premium owner via `refundCreditForVideo(videoId)` in `user-credits`.
 5. On failure: classify → requeue with backoff or `failed`.
 
-**Credit deduct from worker:** use service role update on `users` with the video’s `user_id`, mirroring `deductCreditIfNeeded`, only when transitioning to `done` once (idempotent: only deduct if previous status was not `done`).
+**Credit refund from worker:** on terminal `failed`, use service role to increment `free_credits_remaining` by 1 for non-premium owners, idempotently (refund only when the single `claimed/running → failed` UPDATE returns a row).
 
 ### Frontend
 
@@ -208,7 +211,9 @@ Separate package/folder e.g. `worker/` or `services/render-worker/`:
 
 Remove dependency on `SHOTSTACK_API_KEY` for generate/status.
 
-Add for worker: Supabase URL + service role, TTS provider key, Storage bucket name, `WORKER_ID`, lease/backoff env knobs.
+Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `WORKER_ID`, lease/backoff env knobs.
+
+**Object storage (prod R2):** `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` (custom domain or `https://pub-….r2.dev`). Optional: `STORAGE_BACKEND=supabase|r2` (default `supabase` for local; set `r2` on Lightsail).
 
 ---
 
@@ -216,9 +221,9 @@ Add for worker: Supabase URL + service role, TTS provider key, Storage bucket na
 
 1. With Shotstack key unset/removed, `POST /api/generate` still queues a job and returns a UUID `renderId` that exists in `videos`.
 2. A running worker claims a `pending` job via `FOR UPDATE SKIP LOCKED` and no two workers claim the same row in concurrent tests.
-3. Happy path: generate → poll ≤ N minutes → `status=done` and `video_url` is a playable MP4 URL; history shows the clip.
+3. Happy path: generate → poll ≤ N minutes → `status=done` and `video_url` is a playable MP4 URL; history shows the clip. In **prod**, that URL is an **R2** (or custom-domain) HTTPS URL, not Supabase Storage.
 4. Transient failure (simulated retryable error) increments `attempts`, returns to `pending` with future `next_visible_at`, and succeeds on a later attempt without charging more than one credit total for free users.
-5. After `max_attempts` retryable failures, row is `failed` with non-empty `error`; free credit was **not** deducted (or was refunded if any interim deduct was used — v1 policy is deduct-on-done only).
+5. After `max_attempts` retryable failures, row is `failed` with non-empty `error`; the credit reserved at enqueue was **refunded**, so net charge is zero.
 6. Non-retryable failure marks `failed` without exhausting all attempts unnecessarily (attempt may still increment once).
 7. Killing the worker mid-job: after lease expiry another worker (or restarted worker) can reclaim; if attempts exceed max → `failed`.
 8. `POST /api/videos/:id/retry` on a `failed` owned row requeues to `pending` with `attempts=0`; on success deducts one credit for free users.
@@ -228,6 +233,7 @@ Add for worker: Supabase URL + service role, TTS provider key, Storage bucket na
 12. No production code path calls `api.shotstack.io` after cutover.
 13. Unit/integration tests for claim, backoff, retry classification, credit-on-done, and manual retry are written and passing (`npm run test`).
 14. E2E or documented manual QA checklist covers generate + failed + retry (Playwright may mock worker completion if full FFmpeg e2e is too heavy).
+15. A Lightsail instance runs the worker (systemd/pm2 or Docker), claims `pending` jobs against staging/prod Supabase, uploads the MP4 to **Cloudflare R2**, and completes at least one real render end-to-end with a playable R2 `video_url`.
 
 ---
 
@@ -261,10 +267,11 @@ Add for worker: Supabase URL + service role, TTS provider key, Storage bucket na
 | Generate/status/retry API changes | 1d |
 | Queue claim/heartbeat/retry helpers | 1d |
 | Worker skeleton + Storage upload stub | 1d |
+| Prod R2 upload (S3 API) + Lightsail env | 0.5d |
 | FFmpeg template (clips + captions + TTS mux) | 2–4d |
 | Credits-on-done + tests | 0.5–1d |
 | Frontend poll + Retry UI | 0.5–1d |
-| Deploy worker + ops docs | 0.5–1d |
+| Deploy worker + Lightsail ops docs | 0.5–1d |
 | **Total** | **~7–11d** depending on caption/TTS polish |
 
 ---
@@ -281,7 +288,9 @@ Add for worker: Supabase URL + service role, TTS provider key, Storage bucket na
 | `src/lib/user-credits.js` | Keep deduct; ensure idempotent done-path |
 | `src/lib/render-queue.js` (new) | Claim/complete/fail helpers if used from Next (retry) |
 | `src/components/CreatorWorkspace.js` | Status map + Retry |
-| `worker/` (new) | Claim loop, pipeline, FFmpeg, upload |
+| `worker/` (new) | Claim loop, pipeline, FFmpeg, upload (Supabase local; **R2 prod**) |
+| `worker/Dockerfile` (optional) | Same image for local + Lightsail if using Docker |
+| `worker/README.md` | Local run + Lightsail deploy + **R2 env** (size, systemd/pm2, secrets) |
 | `.env.local` / docs | Drop Shotstack; document worker env |
 | `__tests__/*` | Queue + credits + retry |
 | `TESTING.md` / README | Worker how-to |
@@ -292,13 +301,22 @@ Add for worker: Supabase URL + service role, TTS provider key, Storage bucket na
 - Multi-region workers, priority queues, per-tenant concurrency SLAs.
 - Regenerating script/Pexels on manual retry (reuse `payload`).
 - Billing/Stripe premium flows beyond existing `is_premium` flag.
+- ECS/Fargate, Fly, Railway, or bare multi-droplet farms for v1.
+- Co-locating Next.js on Lightsail (keep Vercel unless we later choose to move).
+- Migrating historical Supabase Storage MP4s into R2 (optional; new prod uploads go to R2 only).
+- Signed/private playback URLs (v1 uses public object URLs).
 
 ## Open Questions (resolve during plan Task 0)
 
-1. TTS provider choice and voice mapping for Moody / Corporate / Cinematic.
-2. Exact Storage bucket + public vs signed URL policy for `video_url`.
-3. Whether to ship `RENDER_BACKEND` flag for dual-run or hard cut.
-4. Worker language: Node (share repo) vs Python (ffmpeg-python) — default **Node** in monorepo `worker/`.
+Resolved (2026-08-24):
+
+- Credit policy = reserve at enqueue + refund on terminal `failed`.
+- Worker host = **AWS Lightsail** (prod); local-first for development; Next stays on Vercel.
+- TTS = **OpenAI TTS** (`tts-1`); voices: Moody→`onyx`, Corporate→`alloy`, Cinematic→`nova`.
+- Storage = **Dev/MVP:** Supabase bucket **`renders`**, public URLs. **Prod:** **Cloudflare R2** (public base URL); Supabase Storage not used for new prod renders (egress cost).
+- Rollout = **hard cut** (no `RENDER_BACKEND` dual-run flag).
+- Worker language = **Node** in monorepo `worker/`.
+- Lightsail = start **$10–12 / 2 GB RAM** Ubuntu LTS; concurrency 1; secrets via env file on the instance.
 
 ---
 

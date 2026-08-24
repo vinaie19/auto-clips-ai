@@ -1,0 +1,15 @@
+[Unit]
+Description=AutoClips render worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/autoclips/worker
+EnvironmentFile=/etc/autoclips-worker.env
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target

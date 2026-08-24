@@ -10,12 +10,12 @@ const LEMON_CHECKOUT =
 
 const PRE_QUEUE_LOADER = "Drafting AI Script & Queueing Render...";
 
-function loaderTextForShotstackStatus(status) {
-  if (status === "queued" || status === "fetching") {
-    return "Positioned in Cloud Queue...";
+function loaderTextForStatus(status) {
+  if (status === "pending" || status === "claimed" || status === "queued") {
+    return "Positioned in render queue...";
   }
-  if (status === "rendering" || status === "saving") {
-    return "Stitching Pexels HD Clips & Captions...";
+  if (status === "running" || status === "rendering") {
+    return "Stitching clips, captions & voiceover...";
   }
   return null;
 }
@@ -98,12 +98,13 @@ export default function CreatorWorkspace() {
   }
 
   /**
-   * Poll Shotstack status via our backend every 3s until done/failed/timeout.
+   * Poll render status every 3s. Up to ~10 stock clips + TTS + FFmpeg can take
+   * a long time, so allow ~15 minutes.
    */
   function pollUntilReady(statusUrl) {
     return new Promise((resolve, reject) => {
       let attempts = 0;
-      const maxAttempts = 60;
+      const maxAttempts = 300; // 300 * 3s ≈ 15 minutes
 
       const tick = async () => {
         attempts += 1;
@@ -116,7 +117,7 @@ export default function CreatorWorkspace() {
           }
 
           const status = data.status;
-          const mapped = loaderTextForShotstackStatus(status);
+          const mapped = loaderTextForStatus(status);
           if (mapped) setLoaderText(mapped);
 
           if (status === "done" && data.url) {
@@ -127,20 +128,23 @@ export default function CreatorWorkspace() {
 
           if (status === "failed") {
             stopPolling();
-            reject(new Error(data.error || "Shotstack render failed."));
+            reject(new Error(data.error || "Render failed."));
             return;
           }
 
           if (attempts >= maxAttempts) {
             stopPolling();
-            reject(new Error("Render timed out. Try again in a moment."));
+            reject(
+              new Error(
+                "Render timed out after waiting ~15 minutes. Check the worker logs — downloads or FFmpeg may still be running."
+              )
+            );
           }
         } catch (err) {
           if (attempts >= maxAttempts) {
             stopPolling();
             reject(err);
           }
-          // Transient network blips: keep interval alive until timeout
         }
       };
 
@@ -148,6 +152,70 @@ export default function CreatorWorkspace() {
       void tick();
       pollRef.current = setInterval(tick, 3000);
     });
+  }
+
+  async function runPollFlow(statusUrl, { creditHint } = {}) {
+    setLoaderText("Positioned in render queue...");
+    const mp4Url = await pollUntilReady(statusUrl);
+    setVideoUrl(mp4Url);
+    setLoaderText("");
+    if (typeof creditHint?.freeCreditsRemaining === "number") {
+      setCredits(creditHint.freeCreditsRemaining);
+    }
+    await refreshHistory();
+    await refreshProfile();
+  }
+
+  async function handleRetry(videoId) {
+    if (!videoId || isBusy) return;
+
+    stopPolling();
+    setIsGenerating(true);
+    setLoaderText("Requeueing failed render...");
+    setError(null);
+    setShowPaywall(false);
+    setVideoUrl(null);
+
+    try {
+      const response = await fetch(`/api/videos/${encodeURIComponent(videoId)}/retry`, {
+        method: "POST",
+      });
+      const data = await response.json();
+
+      if (response.status === 403 && data.code === "PAYWALL_REQUIRED") {
+        setShowPaywall(true);
+        throw new Error(data.error || "Upgrade required.");
+      }
+
+      if (!response.ok) {
+        throw new Error(data.error || "Retry request failed.");
+      }
+
+      if (typeof data.freeCreditsRemaining === "number") {
+        setCredits(data.freeCreditsRemaining);
+      }
+
+      const statusUrl =
+        data.statusUrl ||
+        (data.renderId
+          ? `/api/generate/status?id=${encodeURIComponent(data.renderId)}`
+          : null);
+
+      if (!statusUrl) {
+        throw new Error("Backend did not return a renderId or statusUrl.");
+      }
+
+      await runPollFlow(statusUrl);
+    } catch (err) {
+      console.error("Retry flow error:", err);
+      setError(err.message || "Something went wrong while retrying your video.");
+      setVideoUrl(null);
+      await refreshHistory();
+      await refreshProfile();
+    } finally {
+      setIsGenerating(false);
+      stopPolling();
+    }
   }
 
   async function handleGenerate(event) {
@@ -196,16 +264,18 @@ export default function CreatorWorkspace() {
         throw new Error("Backend did not return a renderId or statusUrl.");
       }
 
-      setLoaderText("Positioned in Cloud Queue...");
-      const mp4Url = await pollUntilReady(statusUrl);
-      setVideoUrl(mp4Url);
-      setLoaderText("");
-      await refreshHistory();
-      await refreshProfile();
+      setLoaderText("Positioned in render queue...");
+      await runPollFlow(statusUrl, {
+        creditHint: {
+          freeCreditsRemaining: data.freeCreditsRemaining,
+        },
+      });
     } catch (err) {
       console.error("Generate flow error:", err);
       setError(err.message || "Something went wrong while generating your video.");
       setVideoUrl(null);
+      await refreshHistory();
+      await refreshProfile();
     } finally {
       setIsGenerating(false);
       stopPolling();
@@ -339,7 +409,7 @@ export default function CreatorWorkspace() {
                     src={videoUrl}
                     controls
                     playsInline
-                    className="h-full w-full object-cover opacity-0 animate-fade-in"
+                    className="h-full w-full object-cover animate-fade-in"
                   />
                 </div>
               ) : isBusy ? (
@@ -350,7 +420,7 @@ export default function CreatorWorkspace() {
                     {loaderText}
                   </p>
                   <p className="relative z-10 mt-2 text-xs text-zinc-500">
-                    Polling cloud render status every 3 seconds…
+                    Polling render status every 3 seconds…
                   </p>
                 </div>
               ) : (
@@ -404,6 +474,7 @@ export default function CreatorWorkspace() {
                         poster={item.thumbnail_url || undefined}
                         muted
                         playsInline
+                        controls
                         className="h-full w-full object-cover"
                       />
                     ) : (
@@ -412,11 +483,27 @@ export default function CreatorWorkspace() {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-1 p-4">
+                  <div className="space-y-2 p-4">
                     <p className="line-clamp-2 text-sm font-medium text-white">{item.prompt}</p>
                     <p className="text-xs text-zinc-500">
                       {item.tone || "—"} · {item.subtitle_theme || "—"}
+                      {item.status ? ` · ${item.status}` : ""}
                     </p>
+                    {item.status === "failed" && (
+                      <div className="space-y-2 pt-1">
+                        {item.error ? (
+                          <p className="text-xs text-red-300/90 line-clamp-2">{item.error}</p>
+                        ) : null}
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleRetry(item.id)}
+                          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50"
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </article>
               ))}
