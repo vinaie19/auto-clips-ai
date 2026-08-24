@@ -3,6 +3,7 @@ import {
   chunkIntoPunchyBlocks,
   computeCaptionTimings,
 } from "../worker/pipeline/captions.js";
+import { timingsFromWordAlignment } from "../worker/pipeline/align-captions.js";
 
 describe("chunkIntoPunchyBlocks", () => {
   it("splits into short caption blocks", () => {
@@ -34,5 +35,29 @@ describe("computeCaptionTimings", () => {
     expect(timings[timings.length - 1].end).toBeCloseTo(30, 3);
     const span = timings.reduce((sum, t) => sum + (t.end - t.start), 0);
     expect(span).toBeCloseTo(30, 2);
+  });
+});
+
+describe("timingsFromWordAlignment", () => {
+  it("uses whisper word starts so captions do not begin before speech", () => {
+    const blocks = ["hello world", "this works"];
+    const words = [
+      { word: "hello", start: 0.35, end: 0.7 },
+      { word: "world", start: 0.75, end: 1.1 },
+      { word: "this", start: 1.2, end: 1.4 },
+      { word: "works", start: 1.45, end: 1.9 },
+    ];
+    const timings = timingsFromWordAlignment(blocks, words, 2.0);
+    expect(timings[0].start).toBeGreaterThanOrEqual(0.35);
+    expect(timings[0].text).toBe("hello world");
+    expect(timings[1].start).toBeGreaterThanOrEqual(timings[0].end);
+    expect(timings[timings.length - 1].end).toBeCloseTo(2.0, 3);
+  });
+
+  it("falls back to proportional timing when words are missing", () => {
+    const blocks = ["one two", "three four"];
+    const timings = timingsFromWordAlignment(blocks, [], 10);
+    expect(timings[0].start).toBe(0);
+    expect(timings[timings.length - 1].end).toBeCloseTo(10, 3);
   });
 });

@@ -55,16 +55,6 @@ const TTS_VOICES = [
 
 const PRE_QUEUE_LOADER = "Drafting AI Script & Queueing Render...";
 
-function loaderTextForStatus(status) {
-  if (status === "pending" || status === "claimed" || status === "queued") {
-    return "Positioned in render queue...";
-  }
-  if (status === "running" || status === "rendering") {
-    return "Stitching clips, captions & voiceover...";
-  }
-  return null;
-}
-
 function formatStatus(status) {
   if (!status) return "Unknown";
   if (status === "done") return "Ready";
@@ -326,7 +316,6 @@ export default function CreatorWorkspace() {
   const [aspectRatio, setAspectRatio] = useState("9:16");
   const [previewingVoice, setPreviewingVoice] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
   const [loaderText, setLoaderText] = useState(PRE_QUEUE_LOADER);
   const [error, setError] = useState(null);
   const [showPaywall, setShowPaywall] = useState(false);
@@ -336,7 +325,6 @@ export default function CreatorWorkspace() {
   /** @type {"generate" | "videos"} */
   const [nav, setNav] = useState("generate");
   const [selectedVideoId, setSelectedVideoId] = useState(null);
-  const pollRef = useRef(null);
   const previewAudioRef = useRef(null);
   const previewUrlRef = useRef(null);
   const mainRef = useRef(null);
@@ -363,12 +351,15 @@ export default function CreatorWorkspace() {
     [clerkUserId, paddleReady]
   );
 
-  const isBusy = isGenerating || isPolling;
+  const isBusy = isGenerating;
 
   const selectedVideo = useMemo(
     () => history.find((item) => item.id === selectedVideoId) || null,
     [history, selectedVideoId]
   );
+
+  const pollsRef = useRef(new Map());
+  const [pollingIds, setPollingIds] = useState(() => new Set());
 
   useEffect(() => {
     return () => {
@@ -382,6 +373,38 @@ export default function CreatorWorkspace() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const id of pollsRef.current.values()) clearInterval(id);
+      pollsRef.current.clear();
+    };
+  }, []);
+
+  function markPolling(videoId, active) {
+    if (!videoId) return;
+    setPollingIds((prev) => {
+      const next = new Set(prev);
+      if (active) next.add(videoId);
+      else next.delete(videoId);
+      return next;
+    });
+  }
+
+  function stopPolling(videoId) {
+    if (videoId) {
+      const handle = pollsRef.current.get(videoId);
+      if (handle) clearInterval(handle);
+      pollsRef.current.delete(videoId);
+      markPolling(videoId, false);
+      return;
+    }
+    for (const [id, handle] of pollsRef.current.entries()) {
+      clearInterval(handle);
+      markPolling(id, false);
+    }
+    pollsRef.current.clear();
+  }
 
   async function previewVoiceSample(voiceId) {
     if (isBusy || previewingVoice) return;
@@ -465,12 +488,6 @@ export default function CreatorWorkspace() {
     };
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, []);
-
   function goGenerate() {
     setNav("generate");
     setSelectedVideoId(null);
@@ -506,18 +523,13 @@ export default function CreatorWorkspace() {
     );
   }
 
-  function stopPolling() {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    setIsPolling(false);
-  }
-
   function pollUntilReady(statusUrl, videoId) {
     return new Promise((resolve, reject) => {
       let attempts = 0;
       const maxAttempts = 300;
+      const key = videoId || statusUrl;
+
+      stopPolling(key);
 
       const tick = async () => {
         attempts += 1;
@@ -530,8 +542,6 @@ export default function CreatorWorkspace() {
           }
 
           const status = data.status;
-          const mapped = loaderTextForStatus(status);
-          if (mapped) setLoaderText(mapped);
 
           if (videoId) {
             patchHistoryItem(videoId, {
@@ -543,19 +553,19 @@ export default function CreatorWorkspace() {
           }
 
           if (status === "done" && data.url) {
-            stopPolling();
+            stopPolling(key);
             resolve(data.url);
             return;
           }
 
           if (status === "failed") {
-            stopPolling();
+            stopPolling(key);
             reject(new Error(data.error || "Render failed."));
             return;
           }
 
           if (attempts >= maxAttempts) {
-            stopPolling();
+            stopPolling(key);
             reject(
               new Error(
                 "Render timed out after waiting ~15 minutes. Check the worker logs — downloads or FFmpeg may still be running."
@@ -564,33 +574,40 @@ export default function CreatorWorkspace() {
           }
         } catch (err) {
           if (attempts >= maxAttempts) {
-            stopPolling();
+            stopPolling(key);
             reject(err);
           }
         }
       };
 
-      setIsPolling(true);
+      markPolling(key, true);
       void tick();
-      pollRef.current = setInterval(tick, 3000);
+      pollsRef.current.set(key, setInterval(tick, 3000));
     });
   }
 
   async function runPollFlow(statusUrl, videoId, { creditHint } = {}) {
-    setLoaderText("Positioned in render queue...");
-    await pollUntilReady(statusUrl, videoId);
-    setLoaderText("");
-    if (typeof creditHint?.freeCreditsRemaining === "number") {
-      setCredits(creditHint.freeCreditsRemaining);
+    try {
+      await pollUntilReady(statusUrl, videoId);
+      if (typeof creditHint?.freeCreditsRemaining === "number") {
+        setCredits(creditHint.freeCreditsRemaining);
+      }
+      await refreshHistory();
+      await refreshProfile();
+    } catch (err) {
+      console.error("Background poll error:", err);
+      patchHistoryItem(videoId, {
+        status: "failed",
+        error: err?.message || "Render failed.",
+      });
+      await refreshHistory().catch(() => {});
+      await refreshProfile().catch(() => {});
     }
-    await refreshHistory();
-    await refreshProfile();
   }
 
   async function handleRetry(videoId) {
     if (!videoId || isBusy) return;
 
-    stopPolling();
     openVideo(videoId);
     setIsGenerating(true);
     setLoaderText("Requeueing failed render...");
@@ -627,15 +644,15 @@ export default function CreatorWorkspace() {
         throw new Error("Backend did not return a renderId or statusUrl.");
       }
 
-      await runPollFlow(statusUrl, videoId);
+      setIsGenerating(false);
+      setLoaderText("");
+      void runPollFlow(statusUrl, videoId);
     } catch (err) {
       console.error("Retry flow error:", err);
       setError(err.message || "Something went wrong while retrying your video.");
       await refreshHistory();
       await refreshProfile();
-    } finally {
       setIsGenerating(false);
-      stopPolling();
     }
   }
 
@@ -644,7 +661,6 @@ export default function CreatorWorkspace() {
     const trimmed = topic.trim();
     if (!trimmed || isBusy) return;
 
-    stopPolling();
     setIsGenerating(true);
     setLoaderText(PRE_QUEUE_LOADER);
     setError(null);
@@ -703,14 +719,17 @@ export default function CreatorWorkspace() {
         targetDurationSeconds,
         aspectRatio,
       });
-      openVideo(videoId);
+
+      // Ready for the next prompt while this job renders in the background.
+      setTopic("");
+      setLoaderText("");
+      setIsGenerating(false);
 
       const statusUrl =
         data.statusUrl ||
         `/api/generate/status?id=${encodeURIComponent(videoId)}`;
 
-      setLoaderText("Positioned in render queue...");
-      await runPollFlow(statusUrl, videoId, {
+      void runPollFlow(statusUrl, videoId, {
         creditHint: {
           freeCreditsRemaining: data.freeCreditsRemaining,
         },
@@ -720,14 +739,13 @@ export default function CreatorWorkspace() {
       setError(err.message || "Something went wrong while generating your video.");
       await refreshHistory();
       await refreshProfile();
-    } finally {
       setIsGenerating(false);
-      stopPolling();
+      setLoaderText("");
     }
   }
 
   const watchingBusy =
-    isBusy && selectedVideoId && selectedVideo?.id === selectedVideoId;
+    Boolean(selectedVideoId) && pollingIds.has(selectedVideoId);
 
   const selectedAspect = selectedVideo?.aspectRatio || "9:16";
   const playerAspectClass =
@@ -1154,12 +1172,20 @@ export default function CreatorWorkspace() {
                 <section className="glass-card overflow-hidden rounded-2xl">
                   <div
                     className={`relative mx-auto w-full bg-zinc-950 ${playerAspectClass}`}
-                  >                    {watchingBusy ? (
+                  >
+                    {watchingBusy ||
+                    ["pending", "claimed", "running", "queued"].includes(
+                      selectedVideo.status
+                    ) ? (
                       <div className="relative flex h-full flex-col items-center justify-center overflow-hidden bg-[linear-gradient(180deg,#18181b_0%,#09090b_100%)] px-6 text-center">
                         <div className="animate-scan pointer-events-none absolute inset-x-0 h-24 bg-gradient-to-b from-transparent via-indigo-400/25 to-transparent" />
                         <span className="relative z-10 mb-4 h-8 w-8 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-300" />
                         <p className="relative z-10 text-sm font-medium text-zinc-100">
-                          {loaderText || "Rendering…"}
+                          {formatStatus(selectedVideo.status) === "Queued"
+                            ? "Positioned in render queue..."
+                            : formatStatus(selectedVideo.status) === "Rendering"
+                              ? "Stitching clips, captions & voiceover..."
+                              : "Rendering…"}
                         </p>
                         <p className="relative z-10 mt-2 text-xs text-zinc-500">
                           Status updates every few seconds

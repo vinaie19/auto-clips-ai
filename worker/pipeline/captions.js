@@ -126,7 +126,7 @@ export function computeCaptionTimings(blocks, totalDuration) {
  * @param {string[]} blocks
  * @param {number} totalDuration
  * @param {string} themeName
- * @param {{ width?: number, height?: number }} [frame]
+ * @param {{ width?: number, height?: number, timings?: { start: number, end: number, text: string }[] }} [frame]
  */
 export function writeAssCaptions(
   assPath,
@@ -138,7 +138,10 @@ export function writeAssCaptions(
   const theme = THEMES[themeName] || THEMES["Viral Yellow"];
   const primary = hexToAss(theme.primary);
   const outline = hexToAss(theme.outline);
-  const timings = computeCaptionTimings(blocks, totalDuration);
+  const timings =
+    Array.isArray(frame.timings) && frame.timings.length > 0
+      ? frame.timings
+      : computeCaptionTimings(blocks, totalDuration);
   const width = Math.max(16, Math.round(Number(frame.width) || 1080));
   const height = Math.max(16, Math.round(Number(frame.height) || 1920));
   const fontSize = height >= width ? 72 : height === width ? 64 : 68;

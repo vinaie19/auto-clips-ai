@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { synthesizeSpeech } from "./tts.js";
 import { downloadClips } from "./download.js";
 import { writeAssCaptions, chunkIntoPunchyBlocks } from "./captions.js";
+import { resolveCaptionTimings } from "./align-captions.js";
 import { renderVerticalMp4, grabThumbnail, fitAudioToTarget } from "./ffmpeg.js";
 import { uploadRenderArtifacts } from "./upload.js";
 import { computeSegmentDurations } from "./segment-durations.js";
@@ -111,10 +112,19 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
       let assPath = null;
       if (captionsEnabled) {
         const blocks = chunkIntoPunchyBlocks(script, 3);
+        console.log(
+          JSON.stringify({
+            event: "step_caption_align",
+            video_id: job.id,
+            blocks: blocks.length,
+          })
+        );
+        const timings = await resolveCaptionTimings(blocks, audioPath, duration);
         assPath = join(workDir, "captions.ass");
         writeAssCaptions(assPath, blocks, duration, subtitleTheme, {
           width,
           height,
+          timings,
         });
       }
 
