@@ -1,4 +1,4 @@
--- AutoClips.ai Supabase schema
+-- Short Clips Supabase schema
 -- Run this in the Supabase SQL editor before using the app.
 -- Also apply migrations under supabase/migrations/ for incremental updates.
 

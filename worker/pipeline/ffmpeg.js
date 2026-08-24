@@ -78,15 +78,37 @@ export function buildAtempoFilter(speed) {
 }
 
 /**
- * If audio is longer than target, speed it up to fit. Returns path + duration used.
+ * Fit TTS length to the chosen target (30/45/60).
+ * - Too long → speed up (atempo > 1)
+ * - Too short → slow down mildly (atempo >= 0.85) so short scripts don't stay ~35s on a 60s setting
+ * Returns path + fitted duration + rawDuration (for caption timestamp scaling).
  */
 export async function fitAudioToTarget(audioPath, fittedPath, targetSeconds) {
   const current = await probeDurationSeconds(audioPath);
   const target = Math.max(8, Number(targetSeconds) || 45);
-  if (!Number.isFinite(current) || current <= target * 1.06) {
-    return { path: audioPath, duration: current || target };
+  const rawDuration = Number.isFinite(current) && current > 0 ? current : target;
+
+  if (!Number.isFinite(current) || current <= 0) {
+    return { path: audioPath, duration: target, rawDuration: target };
   }
-  const speed = current / target;
+
+  // Within ~6% of target — keep as-is.
+  if (current <= target * 1.06 && current >= target * 0.94) {
+    return { path: audioPath, duration: rawDuration, rawDuration };
+  }
+
+  // Cap slowdown so VO does not sound drunken; primary fix is longer scripts.
+  const MIN_SPEED = 0.85;
+  const MAX_SPEED = 4;
+  let speed = current / target;
+  speed = Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed));
+
+  // After clamping, if still essentially unchanged, skip ffmpeg.
+  const projected = current / speed;
+  if (Math.abs(projected - current) < 0.35) {
+    return { path: audioPath, duration: rawDuration, rawDuration };
+  }
+
   const filter = buildAtempoFilter(speed);
   await run(
     FFMPEG,
@@ -94,7 +116,11 @@ export async function fitAudioToTarget(audioPath, fittedPath, targetSeconds) {
     "ffmpeg-atempo"
   );
   const fitted = await probeDurationSeconds(fittedPath);
-  return { path: fittedPath, duration: fitted || target };
+  return {
+    path: fittedPath,
+    duration: fitted || projected || target,
+    rawDuration,
+  };
 }
 
 /**

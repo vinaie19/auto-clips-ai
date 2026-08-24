@@ -3,7 +3,11 @@ import {
   chunkIntoPunchyBlocks,
   computeCaptionTimings,
 } from "../worker/pipeline/captions.js";
-import { timingsFromWordAlignment } from "../worker/pipeline/align-captions.js";
+import {
+  timingsFromWordAlignment,
+  normalizeWord,
+  scaleWordTimings,
+} from "../worker/pipeline/align-captions.js";
 
 describe("chunkIntoPunchyBlocks", () => {
   it("splits into short caption blocks", () => {
@@ -51,6 +55,27 @@ describe("computeCaptionTimings", () => {
   });
 });
 
+describe("normalizeWord", () => {
+  it("folds curly apostrophes to ascii", () => {
+    expect(normalizeWord("it’s")).toBe("it's");
+    expect(normalizeWord("it's")).toBe("it's");
+  });
+});
+
+describe("scaleWordTimings", () => {
+  it("scales raw whisper times into fitted duration", () => {
+    const scaled = scaleWordTimings(
+      [
+        { word: "hello", start: 0, end: 1 },
+        { word: "world", start: 1, end: 2 },
+      ],
+      0.5
+    );
+    expect(scaled[0].end).toBeCloseTo(0.5, 3);
+    expect(scaled[1].end).toBeCloseTo(1, 3);
+  });
+});
+
 describe("timingsFromWordAlignment", () => {
   it("uses whisper word starts so captions do not begin before speech", () => {
     const blocks = ["hello world", "this works"];
@@ -72,5 +97,51 @@ describe("timingsFromWordAlignment", () => {
     const timings = timingsFromWordAlignment(blocks, [], 10);
     expect(timings[0].start).toBe(0);
     expect(timings[timings.length - 1].end).toBeCloseTo(10, 3);
+  });
+
+  it("matches curly script apostrophe to ascii whisper words", () => {
+    const blocks = ["it’s a desk"];
+    const words = [
+      { word: "it's", start: 0.1, end: 0.3 },
+      { word: "a", start: 0.35, end: 0.4 },
+      { word: "desk", start: 0.45, end: 0.8 },
+    ];
+    const timings = timingsFromWordAlignment(blocks, words, 1.0);
+    expect(timings).toHaveLength(1);
+    expect(timings[0].start).toBeGreaterThanOrEqual(0.1);
+    expect(timings[0].end).toBeCloseTo(1.0, 3);
+  });
+
+  it("skips whisper fillers mid-phrase without dumping later blocks", () => {
+    const blocks = ["open notebooks", "soft breeze"];
+    const words = [
+      { word: "open", start: 0.0, end: 0.2 },
+      { word: "uh", start: 0.22, end: 0.3 },
+      { word: "notebooks", start: 0.35, end: 0.7 },
+      { word: "soft", start: 0.8, end: 1.0 },
+      { word: "breeze", start: 1.05, end: 1.4 },
+    ];
+    const timings = timingsFromWordAlignment(blocks, words, 1.5);
+    expect(timings).toHaveLength(2);
+    expect(timings[0].start).toBeCloseTo(0, 2);
+    expect(timings[1].start).toBeGreaterThanOrEqual(timings[0].end);
+    expect(timings[1].start).toBeGreaterThanOrEqual(0.8);
+    expect(timings[1].end).toBeCloseTo(1.5, 3);
+  });
+
+  it("keeps later whisper sync after one weak mid block", () => {
+    const blocks = ["hello world", "mystery phrase", "final words"];
+    const words = [
+      { word: "hello", start: 0.0, end: 0.2 },
+      { word: "world", start: 0.25, end: 0.5 },
+      { word: "final", start: 1.2, end: 1.4 },
+      { word: "words", start: 1.45, end: 1.8 },
+    ];
+    const timings = timingsFromWordAlignment(blocks, words, 2.0);
+    expect(timings).toHaveLength(3);
+    expect(timings[0].text).toBe("hello world");
+    expect(timings[2].text).toBe("final words");
+    expect(timings[2].start).toBeGreaterThanOrEqual(1.2);
+    expect(timings[2].end).toBeCloseTo(2.0, 3);
   });
 });

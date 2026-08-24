@@ -2,19 +2,19 @@
 
 **Status:** Draft for implementation (pricing + billing locked 2026-08-24)  
 **Date:** 2026-08-24  
-**Repo:** autoclips-saas  
+**Repo:** short-clips-saas  
 **Related plan:** [`2026-08-24-self-hosted-render-queue-plan.md`](./2026-08-24-self-hosted-render-queue-plan.md)
 
 ---
 
 ## Context
 
-AutoClips today drafts a script, fetches Pexels clips, builds a Shotstack timeline JSON, queues a cloud render, and polls Shotstack until an MP4 URL is ready. Shotstack is paid per output minute (~$0.20–0.30/min), owns the job queue/status API, and is a hard dependency for every generate.
+Short Clips today drafts a script, fetches Pexels clips, builds a Shotstack timeline JSON, queues a cloud render, and polls Shotstack until an MP4 URL is ready. Shotstack is paid per output minute (~$0.20–0.30/min), owns the job queue/status API, and is a hard dependency for every generate.
 
 We want to **remove Shotstack** and run renders ourselves using:
 
 1. A **Postgres job table** (extend `videos`) as the queue — no Redis.
-2. Claim / lease / heartbeat / retry semantics inspired by Flotorch gateway’s orchestrator outbox (`FOR UPDATE SKIP LOCKED`, visibility timeout, expiry reclaim) — **without** copying the multi-node workflow graph.
+2. Claim / lease / heartbeat / retry semantics via Postgres (`FOR UPDATE SKIP LOCKED`, visibility timeout, expiry reclaim) — a simple single-job worker loop, not a multi-node workflow graph.
 3. A **separate always-on worker on AWS Lightsail** that runs TTS + FFmpeg (or Remotion later) and uploads finished MP4s. **Local/MVP:** Supabase Storage bucket `renders`. **Production:** **Cloudflare R2** (free egress; 10 GB free storage). Next.js stays on Vercel.
 4. **Automatic retries** for transient failures and crash recovery.
 5. **Manual user retry** after a job reaches terminal `failed`.
@@ -51,7 +51,7 @@ Shotstack features in use: multi-clip video track, rich-text captions + themes, 
 
 - Full Shotstack-compatible edit DSL / white-label editor.
 - Redis / BullMQ / SQS.
-- Flotorch-style multi-node graphs, event sourcing, HIL signals.
+- Multi-node workflow graphs, event sourcing, or human-in-the-loop signals.
 - 4K, long-form, high concurrency render farm.
 - Word-level caption animations parity with Shotstack (static/punchy burn-in is enough for v1).
 - Running FFmpeg inside Vercel/Next serverless.
@@ -83,28 +83,29 @@ Render worker (always-on process on **AWS Lightsail**; Next.js stays on Vercel �
 
 **Queue source of truth:** `public.videos` row (or `render_jobs` FK to `videos` if we prefer separation; default is **extend `videos`**).
 
-**Inspiration (Flotorch gateway, do not port wholesale):**
+**Queue claim pattern:**
 
-- Claim: `FOR UPDATE SKIP LOCKED` + `next_visible_at` lease — `src/orchestrator/api/workers/index.ts`
-- Heartbeat extends lease — `transition-node-to-running.ts`
-- Expiry reclaim / max retries — `expiry-scanner.ts`
-- **Difference:** Flotorch only auto-retries on timeout; worker-reported `NODE_FAILED` is terminal. AutoClips **must** retry transient worker errors (TTS/network/FFmpeg OOM) with backoff.
+- Claim: `FOR UPDATE SKIP LOCKED` + `next_visible_at` lease
+- Heartbeat extends the lease while the worker runs
+- Expiry reclaim / max retries for crashed workers
+- Auto-retry **transient** worker errors (TTS/network/FFmpeg OOM) with backoff — not only lease timeouts
 
 ### Locked decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Queue | Postgres table, no Redis | Matches Flotorch outbox idea; already on Supabase |
+| Queue | Postgres table, no Redis | Already on Supabase; simple claim loop |
 | Job identity | `videos.id` is `renderId` for status URLs | Simplifies UI; drop Shotstack ids |
 | Render engine (v1) | FFmpeg in a Docker/worker process | Closest cost/control fit for stitch + burn-in captions |
 | TTS | **OpenAI TTS** (`tts-1`); Moody→`onyx`, Corporate→`alloy`, Cinematic→`nova` | Already use OpenAI for scripts |
 | Storage | **Dev/MVP:** Supabase bucket **`renders`** (public). **Prod:** **Cloudflare R2** bucket (public via `r2.dev` or custom domain); `video_url` stores the public HTTPS URL | R2: 10 GB free + **$0 egress** — video views would burn Supabase egress quota; keep Supabase for Postgres/Auth only in prod |
 | Credits | **Every generate deducts 1 credit** (free and paid). **Reserve at enqueue** (atomic), **refund one credit on terminal `failed`**; never deduct for auto-retries; manual retry uses same `canGenerate` and reserves again on enqueue | No Unlimited bypass; failed renders stay free via refund |
 | Pricing (v1) | **Free: 3** once. **Starter $5 → 15 credits**. **Creator $15 → 60 credits**. Each sold as **monthly subscription** and **one-time top-up** (Starter ~3/$; Creator ~4/$). Fallback: Starter allotment 15→20 at same $5 if conversion weak | Better rate on Creator drives upsell; Creator covers “want more” without Unlimited |
-| Billing | **LemonSqueezy:** 4 products/variants (Starter sub, Creator sub, Starter top-up, Creator top-up); webhooks grant 15 or 60 by variant | Already stubbed in UI; replace Unlimited $29 copy |
+| Billing | **Paddle** (MoR): Starter/Creator sub + top-up; webhook grants 15 or 60 by price id | LemonSqueezy blocked for individuals in some regions; app uses Paddle overlay + `/api/webhooks/paddle` |
+| B-roll matching | **Line-bound beats** (4–15) + **gpt-4o-mini vision verify** on Pexels still; **1 re-query + re-fetch** on mismatch; fall back to first clip if retry fails. Video length follows TTS (script word count + mild atempo fit), not clip count. | Stock search alone often mismatches narration; verify closes the gap without blocking generate |
 | Paid credit grant | Sub payment/renewal or top-up order → `credits +=` pack size (15 or 60). **No `is_premium` skip of deduct** | Metered credits for everyone |
 | Renewal rule | Prefer **add pack size on successful subscription payment** (leftover rolls). Alternative: reset unused to pack size if abuse appears | Friendlier default; hard cap = current balance only |
-| Auto retry max | 3 attempts total (initial + 2 retries) | Align with Flotorch default `retry.max` |
+| Auto retry max | 3 attempts total (initial + 2 retries) | Enough for transient TTS/network/FFmpeg failures |
 | Manual retry | Allowed only when `status = failed`; resets `attempts` to 0; same row id | No duplicate history spam |
 | Worker host | **AWS Lightsail** (small Linux instance) for production; local `node worker` / Docker for development | Use AWS credits; simple VM + FFmpeg; not Vercel serverless; not ECS/Fargate for v1 |
 | App host | Next.js remains on **Vercel** | Worker is a separate always-on process; API/UI stay request/response |
@@ -178,11 +179,25 @@ Unchanged client inputs: `topic`, `tone`, `subtitleTheme`.
 
 Changes:
 
-1. Still: auth, paywall (`canGenerate`), Pexels, script draft.
-2. **Do not** call Shotstack.
-3. Insert `videos` with `status: pending`, `payload: {…}`, `next_visible_at: now()`, `attempts: 0`.
-4. **Keep** calling `deductCreditIfNeeded` here to reserve the credit, but make the decrement atomic (guarded RPC — see plan Task 7).
-5. Return `{ renderId: video.id, videoId, statusUrl, script, … }`.
+1. Still: auth, paywall (`canGenerate`), filmable script draft, **line-bound visual plan**, Pexels fetch with **vision clip-verify + 1 retry**.
+2. Enqueue `videos` with `payload` including `script`, `visualBeats` (`line`, `query`, `url`, `weight`, `verified`, `retried`), tone/voice/captions.
+3. **Do not** call Shotstack.
+4. Insert `videos` with `status: pending`, `payload: {…}`, `next_visible_at: now()`, `attempts: 0`.
+5. **Keep** calling `deductCreditIfNeeded` here to reserve the credit, but make the decrement atomic (guarded RPC — see plan Task 7).
+6. Return `{ renderId: video.id, videoId, statusUrl, script, … }`.
+
+#### Clip verify + 1 retry (generate path)
+
+After each Pexels pick for a spoken line:
+
+1. Take the Pexels still (`video.image` or first `video_pictures` URL) — not a full video download.
+2. Call **gpt-4o-mini** vision: score 0–1 whether the still matches the **spoken line** (threshold **0.55**).
+3. If match (or no still / API failure / `CLIP_VERIFY=0`): keep the clip.
+4. If mismatch: use model `betterQuery` (or a short fallback from the line) → **one** re-search → prefer a different URL.
+5. If retry finds nothing better: **keep the original clip** (never block generate for verify).
+6. Persist `verified` / `retried` on each beat in `payload.visualBeats`.
+
+Modules: `src/lib/clip-verify.js`, `src/lib/pexels-broll.js` (`resolveVerifiedClip`).
 
 #### `GET /api/generate/status?id=`
 
@@ -288,8 +303,9 @@ Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `
 14. E2E or documented manual QA checklist covers generate + failed + retry (Playwright may mock worker completion if full FFmpeg e2e is too heavy).
 15. A Lightsail instance runs the worker (systemd/pm2 or Docker), claims `pending` jobs against staging/prod Supabase, uploads the MP4 to **Cloudflare R2**, and completes at least one real render end-to-end with a playable R2 `video_url`.
 16. Landing + paywall advertise **Starter $5 · 15** and **Creator $15 · 60** (subscribe + top-up); no “Unlimited” messaging.
-17. Lemon webhook (or documented manual grant path for staging) adds **15 or 60** credits by purchased variant; generate still decrements for those users.
+17. Paddle webhook (or documented manual grant path for staging) adds **15 or 60** credits by purchased price id; generate still decrements for those users.
 18. `is_premium` (if still present) does **not** bypass credit deduction.
+19. Generate B-roll: each beat is vision-checked (gpt-4o-mini) against the spoken line; mismatch triggers at most **one** re-query + re-fetch; payload beats include `verified` / `retried`; verify failures never block enqueue.
 
 ---
 
@@ -298,6 +314,7 @@ Add for worker: Supabase URL + service role (queue/DB only), TTS provider key, `
 | Layer | What | Count (approx) |
 |-------|------|----------------|
 | Unit | Claimable SQL helpers / status transitions / `isRetryableError` / backoff | +6 |
+| Unit | Clip verify verdict parse + Pexels preview image pick | +4 |
 | Unit | Credit deduct only on done; no deduct on failed/retry queue | +3 |
 | Integration | Insert pending → claim → complete → status API | +2 |
 | Integration | Explicit retryable fail → pending → done; max attempts → failed | +2 |

@@ -1,7 +1,130 @@
 const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
 
 export const MIN_SHOTS = 4;
-export const MAX_SHOTS = 8;
+/** Enough cuts for a full 60s VO without merging many lines into one beat. */
+export const MAX_SHOTS = 15;
+
+/** Vague / filler Pexels phrases that rarely return line-faithful stock. */
+const ABSTRACT_WORD_RE =
+  /\b(intensity|atmosphere|vibes?|motivation|mindset|energy|lifestyle|success|innovation|growth)\b/i;
+const FILLER_TAIL_RE =
+  /\s+(close\s*up|detail|wide\s*shot|side\s*angle|overhead|process|atmosphere)$/i;
+const ACTIONISH_RE =
+  /\b(pour|type|typing|push|push-?ups?|stretch|run|cook|write|hold|lift|sit|stand|walk|cut|mix|open|drink|eat|jump|lunge|squat|plank|sweat|breathe|whisk|heat|stir|chop|fold|press|clap|wave|kick|jog|meditat|yoga|mat|floor|desk|keyboard|mug|cup|coffee|laptop)\b/i;
+
+/**
+ * True when a stock query is too vague for reliable Pexels hits.
+ * @param {string} query
+ */
+export function isVagueStockQuery(query) {
+  const q = String(query || "").trim();
+  if (!q) return true;
+  const words = q.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  if (words.length === 1) {
+    return (
+      ABSTRACT_WORD_RE.test(q) ||
+      /^(close\s*up|detail|wide\s*shot|intensity|atmosphere|vibes?)$/i.test(q)
+    );
+  }
+  if (
+    /^(close\s*up|detail|wide\s*shot|side\s*angle|overhead|process|atmosphere|intensity)$/i.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(intense|epic|motivational|powerful|amazing)\s+(workout|fitness|training|energy)(\s+close\s*up)?$/i.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (ABSTRACT_WORD_RE.test(q) && words.length <= 5) return true;
+  if (/^(person|people|man|woman)\s+(working\s+out|exercising|training)$/i.test(q)) {
+    return true;
+  }
+  if (FILLER_TAIL_RE.test(q)) {
+    const head = q.replace(FILLER_TAIL_RE, "").trim();
+    if (!ACTIONISH_RE.test(head) && head.split(/\s+/).length <= 3) return true;
+  }
+  return false;
+}
+
+/**
+ * Rewrite a vague query from the spoken line (and topic constraints).
+ * @param {string} query
+ * @param {string} line
+ * @param {string} [topic]
+ */
+export function hardenStockQuery(query, line, topic = "") {
+  const q = String(query || "").trim();
+  if (!isVagueStockQuery(q)) return q;
+
+  const spoken = String(line || "").trim();
+  const stop = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "but",
+    "for",
+    "with",
+    "from",
+    "into",
+    "your",
+    "you",
+    "our",
+    "this",
+    "that",
+    "these",
+    "those",
+    "will",
+    "can",
+    "just",
+    "about",
+    "then",
+    "than",
+    "when",
+    "while",
+    "have",
+    "has",
+    "are",
+    "is",
+    "be",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "it",
+    "we",
+    "they",
+    "minute",
+    "minutes",
+    "second",
+    "seconds",
+  ]);
+  const tokens = spoken
+    .replace(/[^\w\s-]/g, " ")
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length > 2 && !stop.has(w.toLowerCase()));
+
+  if (tokens.length >= 2) {
+    return tokens.slice(0, 5).join(" ").toLowerCase();
+  }
+
+  const topicBits = String(topic || "")
+    .replace(/[^\w\s-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2)
+    .slice(0, 4)
+    .join(" ");
+  return topicBits || q;
+}
 
 /**
  * Split narration into spoken lines (sentence beats).
@@ -114,11 +237,12 @@ export async function planVisualBeats(script, topic) {
 Rules:
 - You receive N numbered lines. Return exactly N shots in the same order.
 - Each shot.query must depict WHAT THAT LINE IS SAYING (objects, hands, places, actions a camera can film).
-- Queries: concrete Pexels phrases, 2–6 words (e.g. "close up coffee pour").
-- Never use abstract words alone: success, innovation, motivation, mindset, growth, vibes.
-- Prefer continuity within one motif, but NEVER ignore the line's meaning.
+- Queries: concrete Pexels phrases, 2–6 words (e.g. "close up coffee pour", "bodyweight push ups floor").
+- Honor TOPIC constraints literally (e.g. "no equipment" → bodyweight / living room — never gym machines or dumbbells; "home" → indoor home setting).
+- Ban vague filler: intensity, atmosphere, vibes, motivation, mindset, "intense workout close up", "person working out", lone "close up"/"detail"/"wide shot".
+- Motif is secondary: same visual world is good, but NEVER sacrifice line meaning for motif continuity.
 - Avoid random faces/portraits unless the line is explicitly about a person.
-- With more lines (up to 8), keep each query specific to that line — do not reuse the same vague filler.
+- Keep each query specific to that line — no repeated vague fillers.
 Return JSON only.`,
         },
         {
@@ -141,7 +265,8 @@ Return JSON:
 Requirements:
 - shots.length must equal ${lines.length}
 - lineIndex is 1-based and matches the list above
-- No duplicate queries unless two lines truly need the same image`,
+- No duplicate queries unless two lines truly need the same image
+- Every query must be filmable and line-specific; respect topic constraints`,
         },
       ],
     }),
@@ -235,13 +360,19 @@ export function normalizeVisualPlan(raw, topic = "topic", opts = {}) {
           : i === providedLines.length - 1
             ? `${base} detail`
             : `${base} close up`;
-      const query = match?.query || fallbackQuery;
+      const rawQuery = match?.query || fallbackQuery;
+      const query = hardenStockQuery(rawQuery, line, topic);
       return {
         line,
         query,
         weight: wordCount(line),
       };
     });
+  } else {
+    beats = beats.map((b) => ({
+      ...b,
+      query: hardenStockQuery(b.query, b.line, topic),
+    }));
   }
 
   // Without authoritative lines, drop duplicate queries (legacy behavior).
@@ -270,8 +401,9 @@ export function normalizeVisualPlan(raw, topic = "topic", opts = {}) {
     ];
     let fi = 0;
     while (beats.length < MIN_SHOTS && fi < fillers.length) {
-      const query = fillers[fi++];
+      const raw = fillers[fi++];
       const line = beats[beats.length - 1]?.line || base;
+      const query = hardenStockQuery(raw, line, topic);
       beats.push({ line, query, weight: wordCount(line) });
     }
   }

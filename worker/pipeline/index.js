@@ -57,7 +57,7 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
       ? payload.aspectRatio
       : "9:16";
     const { width, height } = ASPECT_SIZES[aspectRatio];
-    const workDir = join(tmpdir(), `autoclips-${job.id}-${Date.now()}`);
+    const workDir = join(tmpdir(), `shortclips-${job.id}-${Date.now()}`);
 
     await mkdir(workDir, { recursive: true });
 
@@ -85,6 +85,12 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
         Math.max(fitted.duration || targetDurationSeconds, 8),
         targetDurationSeconds * 1.15
       );
+      const rawDuration = Math.max(
+        0.5,
+        Number(fitted.rawDuration) || duration
+      );
+      // Whisper natural TTS, then scale into fitted/mux timebase.
+      const captionTimeScale = duration / rawDuration;
 
       console.log(
         JSON.stringify({
@@ -125,9 +131,17 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
             event: "step_caption_align",
             video_id: job.id,
             blocks: blocks.length,
+            raw_s: Number(rawDuration.toFixed(2)),
+            fitted_s: Number(duration.toFixed(2)),
+            time_scale: Number(captionTimeScale.toFixed(4)),
           })
         );
-        const timings = await resolveCaptionTimings(blocks, audioPath, duration);
+        const timings = await resolveCaptionTimings(
+          blocks,
+          rawAudioPath,
+          duration,
+          { timeScale: captionTimeScale }
+        );
         assPath = join(workDir, "captions.ass");
         writeAssCaptions(assPath, blocks, duration, subtitleTheme, {
           width,

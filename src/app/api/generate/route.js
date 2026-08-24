@@ -52,18 +52,23 @@ async function draftScript(topic, tone, targetDurationSeconds) {
           content: `You write punchy short-form video scripts for about ${durationMeta.seconds} seconds of spoken narration (~${durationMeta.wordRange} words).
 
 Hard rules:
-- Write exactly 4 to 8 short sentences (each ends with . ! or ?).
+- Write exactly ${durationMeta.sentenceRange || "4 to 8"} short sentences (each ends with . ! or ?).
+- Aim for about ${durationMeta.wordRange} spoken words so narration fills ~${durationMeta.seconds} seconds (do not write a short 30s script when the target is longer).
 - Prefer one clear action or image per sentence (easier to match B-roll).
 - Every sentence must be filmable: name concrete objects, places, hands, or actions a stock camera can show.
-- Do NOT write abstract-only lines (success, mindset, growth, vibes, innovation) unless tied to a visible action.
+- Do NOT write abstract-only lines (success, mindset, growth, vibes, innovation, battleground, creativity, focus, inspiration, hustle) unless tied to a visible action.
+- The final sentence must still be filmable (a concrete closing image), never a slogan or metaphor.
+- Prefer common stock-video actions (pour coffee, stir, type, walk, open a notebook, push-ups, squats, jumping jacks) over rare ones.
+- For workouts / how-tos: one named exercise or step per sentence (e.g. "Do bodyweight squats on the floor."). Avoid form lectures ("knees behind toes"), timers-as-subject, and multi-move lines.
+- Honor topic constraints (e.g. no equipment → bodyweight / home, never gym machines).
 - Return clean plain text only — no markdown, no bullets, no quotes, no labels, no stage directions.`,
         },
         {
           role: "user",
           content: `Topic/niche: ${topic}
 Tone: ${tone}. ${toneGuide}
-Target length: ${durationMeta.seconds} seconds (~${durationMeta.wordRange} spoken words).
-Write 4–8 short filmable sentences that a vertical B-roll video can illustrate line by line.`,
+Target length: ${durationMeta.seconds} seconds (~${durationMeta.wordRange} spoken words, ${durationMeta.sentenceRange || "4–8"} sentences).
+Write filmable sentences that vertical stock B-roll can illustrate line by line. Prefer actions Pexels commonly has. Fill the full target length — end on a concrete image, not a motivational closer.`,
         },
       ],
     }),
@@ -234,6 +239,8 @@ export async function POST(request) {
         query: b.query,
         weight: b.weight,
         line: b.line || null,
+        verified: Boolean(b.verified),
+        retried: Boolean(b.retried),
       })),
       freeCreditsRemaining: updatedProfile.free_credits_remaining,
       isPremium: updatedProfile.is_premium,

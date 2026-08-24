@@ -1,11 +1,11 @@
 [Unit]
-Description=AutoClips render worker
+Description=Short Clips render worker
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/autoclips/worker
-EnvironmentFile=/etc/autoclips-worker.env
+WorkingDirectory=/opt/shortclips/worker
+EnvironmentFile=/etc/shortclips-worker.env
 ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=5

@@ -1,4 +1,4 @@
-# AutoClips render worker
+# Short Clips render worker
 
 Always-on claim loop: TTS (OpenAI) → download Pexels clips → FFmpeg 9:16 + captions → Supabase Storage.
 
@@ -27,8 +27,8 @@ Create a **public** bucket named `renders` in Supabase Storage (Dashboard → St
 
 1. Ubuntu LTS, **~2 GB RAM**, SSH only.
 2. Node 20+, clone/`rsync` `worker/`, `npm ci --omit=dev`.
-3. Env in `/etc/autoclips-worker.env` (include `OPENAI_API_KEY`, `STUB_RENDER=0`).
-4. systemd unit: `deploy/autoclips-worker.service`.
+3. Env in `/etc/shortclips-worker.env` (include `OPENAI_API_KEY`, `STUB_RENDER=0`).
+4. systemd unit: `deploy/shortclips-worker.service`.
 5. Or build/run `Dockerfile` (bundles `ffmpeg-static`).
 
 ## Env

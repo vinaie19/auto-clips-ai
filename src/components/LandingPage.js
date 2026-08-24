@@ -27,7 +27,7 @@ export default function LandingPage() {
       <header className="relative z-10 border-b border-white/5">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <Link href="/" className="brand-glow text-lg font-semibold tracking-tight">
-            AutoClips<span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">.ai</span>
+            Short Clips<span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">.ai</span>
           </Link>
 
           <nav className="hidden items-center gap-8 text-sm text-zinc-300 md:flex">
@@ -53,7 +53,7 @@ export default function LandingPage() {
       <main className="relative z-10">
         <section className="mx-auto flex max-w-4xl flex-col items-center px-4 pb-20 pt-16 text-center sm:px-6 sm:pt-24">
           <p className="mb-5 text-xs font-semibold uppercase tracking-[0.28em] text-indigo-300">
-            AutoClips.ai Creator OS
+            Short Clips Creator OS
           </p>
           <h1 className="text-balance text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-6xl">
             Automate Your Social Growth. Generate Viral Short-Form Videos in Seconds.

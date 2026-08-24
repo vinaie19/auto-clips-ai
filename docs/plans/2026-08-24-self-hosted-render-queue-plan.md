@@ -2,11 +2,11 @@
 
 > **For Claude:** Implement task-by-task. Do not skip tests. Spec is source of truth for behavior.
 
-**Goal:** Replace Shotstack with a Postgres-backed render queue, always-on FFmpeg worker, automatic retries, and manual user retry — matching [`2026-08-24-self-hosted-render-queue-spec.md`](./2026-08-24-self-hosted-render-queue-spec.md). Also ship **metered LemonSqueezy billing** (no Unlimited): Free 3 → **Starter $5 · 15** and **Creator $15 · 60** (each as monthly sub + one-time top-up).
+**Goal:** Replace Shotstack with a Postgres-backed render queue, always-on FFmpeg worker, automatic retries, and manual user retry — matching [`2026-08-24-self-hosted-render-queue-spec.md`](./2026-08-24-self-hosted-render-queue-spec.md). Also ship **metered Paddle billing** (no Unlimited): Free 3 → **Starter $5 · 15** and **Creator $15 · 60** (each as monthly sub + one-time top-up). Generate path includes **line-bound B-roll + gpt-4o-mini clip verify + 1 retry**.
 
-**Architecture:** Next.js owns auth, credits gates, script/Pexels, enqueue, status, manual retry, Lemon webhooks. Worker owns claim/lease/TTS/FFmpeg/object-storage upload/`done`. Queue = extended `videos` table. No Redis. No Flotorch multi-node graph.
+**Architecture:** Next.js owns auth, credits gates, script/Pexels (+ vision verify), enqueue, status, manual retry, Paddle webhooks. Worker owns claim/lease/TTS/FFmpeg/object-storage upload/`done`. Queue = extended `videos` table. No Redis. No multi-node workflow graph.
 
-**Tech stack:** Next.js 16 (Vercel), Supabase (Postgres + Auth; Storage for local/MVP only), **Cloudflare R2** for prod render MP4s, Clerk, **LemonSqueezy**, FFmpeg worker on **AWS Lightsail**, Vitest, Playwright (as needed).
+**Tech stack:** Next.js 16 (Vercel), Supabase (Postgres + Auth; Storage for local/MVP only), **Cloudflare R2** for prod render MP4s, Clerk, **Paddle**, FFmpeg worker on **AWS Lightsail**, Vitest, Playwright (as needed).
 
 **Spec:** `docs/plans/2026-08-24-self-hosted-render-queue-spec.md`
 
@@ -194,7 +194,7 @@ Also implement:
 
 **Step 1: `POST /api/generate`**
 
-- Keep Pexels + `draftScript` + theme validation + `canGenerate`.
+- Keep filmable `draftScript` + `planVisualBeats` + Pexels `fetchBrollForQueries` (vision verify + 1 retry) + theme validation + `canGenerate`.
 - Remove `buildShotstackTimeline` / `submitShotstackRender` (or leave dead code only until Task 8 cleanup).
 - Insert:
 
@@ -204,7 +204,7 @@ Also implement:
   script,
   render_id: null, // set after insert to id, or use id only
   status: 'pending',
-  payload: { script, pexelsVideoUrls, tone, subtitleTheme, voice },
+  payload: { script, pexelsVideoUrls, visualBeats, tone, subtitleTheme, voice, … },
   attempts: 0,
   max_attempts: 3,
   next_visible_at: new Date().toISOString(),
@@ -226,6 +226,26 @@ Also implement:
 **Step 3: Tests** for generate enqueue shape (mock Pexels/LLM) and status read.
 
 **Done when:** Generate queues without Shotstack; status reflects DB.
+
+---
+
+### Task 3b: Clip verify + 1 retry (B-roll quality)
+
+**Files:**
+
+- Create: `src/lib/clip-verify.js` — `normalizeClipVerdict`, `verifyClipAgainstLine` (gpt-4o-mini vision)
+- Modify: `src/lib/pexels-broll.js` — `pickPreviewImage`, `resolveVerifiedClip`, wire into `fetchBrollForQueries`
+- Tests: `__tests__/clip-verify.test.js`
+
+**Step 1:** After each Pexels pick, verify still vs spoken line (score ≥ 0.55).
+
+**Step 2:** On mismatch, one `betterQuery` re-search; prefer different URL; else keep first clip.
+
+**Step 3:** Skip verify when `CLIP_VERIFY=0` / missing key / no image — never fail generate for verify errors.
+
+**Step 4:** Store `verified` / `retried` on beats in payload.
+
+**Done when:** Unit tests pass for verdict parsing + preview image; generate path uses verify.
 
 ---
 
@@ -359,7 +379,7 @@ Set `video_url` (and optional thumbnail via ffmpeg frame grab).
 
 - Create/update: `worker/README.md` (Lightsail section)
 - Optional: `worker/Dockerfile` + compose for the instance
-- Optional: `worker/deploy/autoclips-worker.service` (systemd unit)
+- Optional: `worker/deploy/shortclips-worker.service` (systemd unit)
 
 **Step 1:** Create a Lightsail Linux instance (Ubuntu LTS), open only SSH (no public HTTP required for the worker).
 
@@ -384,9 +404,9 @@ Set `video_url` (and optional thumbnail via ffmpeg frame grab).
 - Optional: `__tests__` mock for R2 put + public URL shape
 - Do **not** require R2 for local `npm run test` / local worker smoke (keep Supabase default)
 
-**Why:** Supabase Storage is fine for MVP, but video views consume **egress** (Free 5 GB / Pro 250 GB then ~$0.09/GB). R2 gives **10 GB free storage** and **$0 egress** — correct for Autoclips playback.
+**Why:** Supabase Storage is fine for MVP, but video views consume **egress** (Free 5 GB / Pro 250 GB then ~$0.09/GB). R2 gives **10 GB free storage** and **$0 egress** — correct for Short Clips playback.
 
-**Step 1:** Create Cloudflare R2 bucket (e.g. `autoclips-renders`). Enable public access via R2.dev subdomain **or** custom domain.
+**Step 1:** Create Cloudflare R2 bucket (e.g. `shortclips-renders`). Enable public access via R2.dev subdomain **or** custom domain.
 
 **Step 2:** Create R2 API token with Object Read & Write on that bucket. Note Account ID + Access Key + Secret.
 
@@ -403,7 +423,7 @@ STORAGE_BACKEND=r2
 R2_ACCOUNT_ID=
 R2_ACCESS_KEY_ID=
 R2_SECRET_ACCESS_KEY=
-R2_BUCKET=autoclips-renders
+R2_BUCKET=shortclips-renders
 R2_PUBLIC_BASE_URL=https://pub-….r2.dev
 ```
 
@@ -516,8 +536,9 @@ Ship stub worker early so API/UI can be developed without waiting on FFmpeg poli
 - [ ] Prod/staging uploads to **Cloudflare R2**; `video_url` is an R2 (or custom-domain) HTTPS URL
 - [ ] Migration applied to prod Supabase
 - [ ] Credits: reserve-at-enqueue + refund-on-fail for **all** users; no Unlimited bypass
-- [ ] LemonSqueezy Starter ($5/15) + Creator ($15/60), each as sub + top-up; webhooks grant by variant
+- [ ] Paddle Starter ($5/15) + Creator ($15/60), each as sub + top-up; webhooks grant by price id
 - [ ] Landing + paywall copy match locked pricing
+- [ ] Clip verify + 1 retry on generate B-roll (Task 3b)
 - [ ] Manual Retry in UI
 - [ ] Spec + this plan left in `docs/plans/` for future agents
 - [ ] Upgrade/drain procedure documented in `worker/README.md`

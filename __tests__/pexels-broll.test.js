@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
 import {
   pickOptimalMp4,
   MAX_VISUAL_BEATS,
   MIN_VISUAL_BEATS,
+  MAX_VERIFY_CANDIDATES,
+  MAX_VISION_ATTEMPTS,
+  MAX_QUERY_ROUNDS,
 } from "@/lib/pexels-broll";
 
 describe("pickOptimalMp4", () => {
@@ -28,6 +30,12 @@ describe("pickOptimalMp4", () => {
 describe("visual beat limits", () => {
   it("allows more continuity edits per motif", () => {
     expect(MIN_VISUAL_BEATS).toBe(4);
-    expect(MAX_VISUAL_BEATS).toBe(8);
+    expect(MAX_VISUAL_BEATS).toBe(15);
+  });
+
+  it("keeps a small retry budget for faster generate", () => {
+    expect(MAX_VISION_ATTEMPTS).toBeLessThanOrEqual(4);
+    expect(MAX_VERIFY_CANDIDATES).toBeLessThanOrEqual(3);
+    expect(MAX_QUERY_ROUNDS).toBeLessThanOrEqual(2);
   });
 });

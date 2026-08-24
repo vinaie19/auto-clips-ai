@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeVisualPlan,
   beatLinesFromScript,
+  isVagueStockQuery,
+  hardenStockQuery,
   MIN_SHOTS,
   MAX_SHOTS,
 } from "@/lib/visual-queries";
@@ -10,14 +12,33 @@ import {
   splitScriptSentences,
 } from "@/lib/segment-durations";
 
+describe("isVagueStockQuery / hardenStockQuery", () => {
+  it("flags vague intensity / filler queries", () => {
+    expect(isVagueStockQuery("intense workout close up")).toBe(true);
+    expect(isVagueStockQuery("home workout intensity")).toBe(true);
+    expect(isVagueStockQuery("person working out")).toBe(true);
+    expect(isVagueStockQuery("coffee pour close up")).toBe(false);
+    expect(isVagueStockQuery("person doing push-ups on floor")).toBe(false);
+  });
+
+  it("rewrites vague queries from the spoken line", () => {
+    const q = hardenStockQuery(
+      "intense workout close up",
+      "Do twenty push-ups on the living room floor.",
+      "10-minute home workout with no equipment"
+    );
+    expect(isVagueStockQuery(q)).toBe(false);
+    expect(q.toLowerCase()).toMatch(/push/);
+  });
+});
+
 describe("beatLinesFromScript", () => {
-  it("clamps to 4–8 spoken lines", () => {
-    const script =
-      "One. Two. Three. Four. Five. Six. Seven. Eight. Nine extra that should merge.";
-    const lines = beatLinesFromScript(script);
+  it("clamps spoken lines to MIN–MAX beats", () => {
+    const many = Array.from({ length: 20 }, (_, i) => `Line ${i + 1}.`).join(" ");
+    const lines = beatLinesFromScript(many);
     expect(lines.length).toBeGreaterThanOrEqual(MIN_SHOTS);
     expect(lines.length).toBeLessThanOrEqual(MAX_SHOTS);
-    expect(lines[lines.length - 1]).toContain("Nine");
+    expect(lines[lines.length - 1]).toContain("Line");
   });
 
   it("splits compound actions on and for more beats", () => {
@@ -62,7 +83,7 @@ describe("normalizeVisualPlan", () => {
   });
 
   it("keeps motif and caps shots at MAX_SHOTS", () => {
-    const shots = Array.from({ length: 12 }, (_, i) => ({
+    const shots = Array.from({ length: MAX_SHOTS + 5 }, (_, i) => ({
       query: `coffee shot ${i + 1}`,
       weight: 1,
     }));

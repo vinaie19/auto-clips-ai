@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "AutoClips.ai — Automate Your Social Growth",
+  title: "Short Clips — Automate Your Social Growth",
   description:
     "Generate viral short-form videos in seconds with AI scripting, kinetic captions, and cloud rendering.",
 };

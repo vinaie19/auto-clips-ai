@@ -768,7 +768,7 @@ export default function CreatorWorkspace() {
       <header className="relative z-10 border-b border-white/5 bg-zinc-950/80 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
           <div className="brand-glow text-lg font-semibold tracking-tight">
-            AutoClips
+            Short Clips
             <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
               .ai
             </span>

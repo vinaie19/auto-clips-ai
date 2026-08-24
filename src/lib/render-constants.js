@@ -188,25 +188,28 @@ export const SUBTITLE_THEMES = {
 
 export const SUBTITLE_THEME_IDS = Object.keys(SUBTITLE_THEMES);
 
-/** Target clip lengths (seconds) → script word guidance. */
+/** Target clip lengths (seconds) → script word / sentence guidance. */
 export const VIDEO_DURATIONS = {
   30: {
     seconds: 30,
     label: "30s",
     blurb: "Quick hook — short and punchy.",
     wordRange: "70–90",
+    sentenceRange: "4 to 6",
   },
   45: {
     seconds: 45,
     label: "45s",
     blurb: "Standard short-form length.",
     wordRange: "110–130",
+    sentenceRange: "6 to 10",
   },
   60: {
     seconds: 60,
     label: "60s",
     blurb: "Full minute — more room to explain.",
     wordRange: "145–170",
+    sentenceRange: "8 to 14",
   },
 };
 
