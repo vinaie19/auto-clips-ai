@@ -47,3 +47,4 @@ On ~1–2 GB hosts set `FFMPEG_LOW_MEM=1` to encode one clip at a time (avoids O
 | `STUB_RENDER` | no | `1` = stub; otherwise real pipeline |
 | `RENDERS_BUCKET` | no | Default `renders` |
 | `FFMPEG_LOW_MEM` | no | `1` = segment path for small RAM; default = single-pass encode |
+| `FFMPEG_THREADS` | no | FFmpeg `-threads` / `-filter_threads` (default `1`; try `2`–`3` on 4 vCPU) |

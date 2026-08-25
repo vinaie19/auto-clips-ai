@@ -28,8 +28,20 @@ const FFPROBE = resolveBin(
 );
 const FFMPEG = resolveBin("FFMPEG_PATH", ffmpegPath, "ffmpeg");
 
-/** Cap decode/encode parallelism for small Lightsail boxes (~1–2 GB). */
-const THREAD_ARGS = ["-threads", "1", "-filter_threads", "1"];
+/**
+ * Decode/encode thread count. Default 1 (safe on small boxes).
+ * On Oracle 4 vCPU, try FFMPEG_THREADS=2 or 3.
+ */
+const FFMPEG_THREADS = Math.max(
+  1,
+  Math.min(16, Number(process.env.FFMPEG_THREADS || 1) || 1)
+);
+const THREAD_ARGS = [
+  "-threads",
+  String(FFMPEG_THREADS),
+  "-filter_threads",
+  String(FFMPEG_THREADS),
+];
 
 /**
  * Segment-then-reencode path for ~1–2 GB hosts.
@@ -410,12 +422,24 @@ export async function renderVerticalMp4({
   };
 
   if (LOW_MEM) {
-    console.log(JSON.stringify({ event: "ffmpeg_mode", mode: "low_mem_segments" }));
+    console.log(
+      JSON.stringify({
+        event: "ffmpeg_mode",
+        mode: "low_mem_segments",
+        threads: FFMPEG_THREADS,
+      })
+    );
     await renderLowMemSegments(args);
     return;
   }
 
-  console.log(JSON.stringify({ event: "ffmpeg_mode", mode: "single_pass" }));
+  console.log(
+    JSON.stringify({
+      event: "ffmpeg_mode",
+      mode: "single_pass",
+      threads: FFMPEG_THREADS,
+    })
+  );
   await renderSinglePass(args);
 }
 
