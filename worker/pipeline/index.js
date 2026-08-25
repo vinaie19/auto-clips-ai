@@ -17,7 +17,7 @@ const ASPECT_SIZES = {
 };
 
 /**
- * Full render: TTS → download → captions → FFmpeg → Storage.
+ * Full render: TTS ∥ download → captions → FFmpeg → Storage.
  * @param {import("@supabase/supabase-js").SupabaseClient} supabase
  * @param {object} job - videos row
  * @param {{ bucket?: string }} [opts]
@@ -72,7 +72,22 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
           aspect: aspectRatio,
         })
       );
-      await synthesizeSpeech(script, voice, rawAudioPath);
+      console.log(
+        JSON.stringify({
+          event: "step_download",
+          video_id: job.id,
+          clips: pexelsUrls.length,
+          motif: payload.visualMotif || null,
+          queries: Array.isArray(payload.visualBeats)
+            ? payload.visualBeats.map((b) => b.query)
+            : payload.visualQueries || [],
+        })
+      );
+      // TTS and clip downloads are independent — overlap for wall-clock savings.
+      const [, clipPaths] = await Promise.all([
+        synthesizeSpeech(script, voice, rawAudioPath),
+        downloadClips(pexelsUrls, workDir),
+      ]);
 
       const fittedPath = join(workDir, "audio.mp3");
       const fitted = await fitAudioToTarget(
@@ -91,19 +106,6 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
       );
       // Whisper natural TTS, then scale into fitted/mux timebase.
       const captionTimeScale = duration / rawDuration;
-
-      console.log(
-        JSON.stringify({
-          event: "step_download",
-          video_id: job.id,
-          clips: pexelsUrls.length,
-          motif: payload.visualMotif || null,
-          queries: Array.isArray(payload.visualBeats)
-            ? payload.visualBeats.map((b) => b.query)
-            : payload.visualQueries || [],
-        })
-      );
-      const clipPaths = await downloadClips(pexelsUrls, workDir);
 
       const beatCount = clipPaths.length;
       const beatWeights = Array.isArray(payload.visualBeats)

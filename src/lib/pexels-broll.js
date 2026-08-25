@@ -12,7 +12,7 @@ export const MIN_VISUAL_BEATS = 4;
 /** Pexels hits to try per search query before a betterQuery round. */
 export const MAX_VERIFY_CANDIDATES = 3;
 /** Max vision API calls per beat (keep generate fast). */
-export const MAX_VISION_ATTEMPTS = 4;
+export const MAX_VISION_ATTEMPTS = 2;
 /** Max distinct Pexels search queries per beat (initial + one betterQuery). */
 export const MAX_QUERY_ROUNDS = 2;
 

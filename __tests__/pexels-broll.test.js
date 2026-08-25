@@ -34,7 +34,7 @@ describe("visual beat limits", () => {
   });
 
   it("keeps a small retry budget for faster generate", () => {
-    expect(MAX_VISION_ATTEMPTS).toBeLessThanOrEqual(4);
+    expect(MAX_VISION_ATTEMPTS).toBe(2);
     expect(MAX_VERIFY_CANDIDATES).toBeLessThanOrEqual(3);
     expect(MAX_QUERY_ROUNDS).toBeLessThanOrEqual(2);
   });

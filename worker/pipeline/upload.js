@@ -1,4 +1,27 @@
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+
+/**
+ * Stream a local file into Supabase Storage (avoids buffering the whole MP4 in RAM).
+ * @param {import("@supabase/supabase-js").SupabaseClient} supabase
+ * @param {string} bucket
+ * @param {string} key
+ * @param {string} filePath
+ * @param {string} contentType
+ */
+async function uploadFileStream(supabase, bucket, key, filePath, contentType) {
+  const { size } = await stat(filePath);
+  const stream = createReadStream(filePath);
+  const { error } = await supabase.storage.from(bucket).upload(key, stream, {
+    contentType,
+    upsert: true,
+    duplex: "half",
+    headers: {
+      "content-length": String(size),
+    },
+  });
+  return error;
+}
 
 /**
  * Upload MP4 (+ optional jpg) to Supabase Storage and return public URLs.
@@ -8,12 +31,13 @@ export async function uploadRenderArtifacts(
   { bucket, userId, videoId, videoPath, thumbPath }
 ) {
   const videoKey = `${userId}/${videoId}.mp4`;
-  const videoBytes = await readFile(videoPath);
-
-  const { error: videoError } = await supabase.storage.from(bucket).upload(videoKey, videoBytes, {
-    contentType: "video/mp4",
-    upsert: true,
-  });
+  const videoError = await uploadFileStream(
+    supabase,
+    bucket,
+    videoKey,
+    videoPath,
+    "video/mp4"
+  );
 
   if (videoError) {
     const err = new Error(`Storage upload failed: ${videoError.message}`);
@@ -26,13 +50,13 @@ export async function uploadRenderArtifacts(
   let thumbnailUrl = null;
   if (thumbPath) {
     const thumbKey = `${userId}/${videoId}.jpg`;
-    const thumbBytes = await readFile(thumbPath);
-    const { error: thumbError } = await supabase.storage
-      .from(bucket)
-      .upload(thumbKey, thumbBytes, {
-        contentType: "image/jpeg",
-        upsert: true,
-      });
+    const thumbError = await uploadFileStream(
+      supabase,
+      bucket,
+      thumbKey,
+      thumbPath,
+      "image/jpeg"
+    );
     if (!thumbError) {
       const { data: thumbPublic } = supabase.storage.from(bucket).getPublicUrl(thumbKey);
       thumbnailUrl = thumbPublic.publicUrl;
