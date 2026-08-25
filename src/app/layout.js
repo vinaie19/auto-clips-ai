@@ -29,7 +29,8 @@ export default function RootLayout({ children }) {
           colorInputText: "#ffffff",
           colorText: "#ffffff",
           colorTextSecondary: "#a1a1aa",
-          colorNeutral: "#27272a",
+          // Light value: used for menu actions, icons, and input borders
+          colorNeutral: "#e4e4e7",
           borderRadius: "0.75rem",
         },
         elements: {
@@ -41,6 +42,11 @@ export default function RootLayout({ children }) {
           formButtonPrimary:
             "bg-gradient-to-r from-indigo-500 to-violet-500 hover:brightness-110",
           footerActionLink: "text-indigo-300 hover:text-indigo-200",
+          userButtonPopoverActionButton: "text-white hover:bg-white/5",
+          userButtonPopoverActionButtonText: "text-white",
+          userButtonPopoverActionButtonIcon: "text-zinc-300",
+          otpCodeFieldInput:
+            "border border-white/30 text-white bg-zinc-900 focus:border-indigo-400",
         },
       }}
     >
