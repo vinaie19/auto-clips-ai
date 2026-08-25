@@ -31,7 +31,8 @@ Create a **public** bucket named `renders` in Supabase Storage (Dashboard → St
 4. systemd unit: `deploy/shortclips-worker.service` (includes MemoryHigh/Max).
 5. Or build/run `Dockerfile` (bundles `ffmpeg-static`).
 
-Render uses **one clip at a time** then concat (not a single multi-input filter graph).
+Render defaults to a **single** FFmpeg pass (scale → concat → ASS → one libx264 encode).
+On ~1–2 GB hosts set `FFMPEG_LOW_MEM=1` to encode one clip at a time (avoids OOM; captions then re-encode after concat).
 
 ## Env
 
@@ -45,3 +46,4 @@ Render uses **one clip at a time** then concat (not a single multi-input filter 
 | `POLL_MS` | no | Default 3000 |
 | `STUB_RENDER` | no | `1` = stub; otherwise real pipeline |
 | `RENDERS_BUCKET` | no | Default `renders` |
+| `FFMPEG_LOW_MEM` | no | `1` = segment path for small RAM; default = single-pass encode |

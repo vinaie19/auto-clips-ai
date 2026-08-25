@@ -31,6 +31,13 @@ const FFMPEG = resolveBin("FFMPEG_PATH", ffmpegPath, "ffmpeg");
 /** Cap decode/encode parallelism for small Lightsail boxes (~1–2 GB). */
 const THREAD_ARGS = ["-threads", "1", "-filter_threads", "1"];
 
+/**
+ * Segment-then-reencode path for ~1–2 GB hosts.
+ * Default is a single filter_complex encode (one libx264 pass).
+ */
+const LOW_MEM =
+  process.env.FFMPEG_LOW_MEM === "1" || process.env.FFMPEG_LOW_MEM === "true";
+
 /** Escape a path for ffmpeg concat demuxer list files. */
 function escapeConcatPath(p) {
   return p.replace(/'/g, "'\\''");
@@ -154,43 +161,115 @@ export async function fitAudioToTarget(audioPath, fittedPath, targetSeconds) {
   };
 }
 
-/**
- * Stitch clips, burn ASS, mux TTS audio at the chosen aspect ratio.
- *
- * Encodes one clip at a time, then concatenates. Opening every input in a
- * single filter_complex (old approach) OOMs ~1–2 GB Lightsail boxes when
- * stitching ~10× 1080×1920 streams.
- */
-export async function renderVerticalMp4({
-  clipPaths,
-  audioPath,
-  assPath,
-  outPath,
-  targetDuration,
-  segmentDurations,
-  width = 1080,
-  height = 1920,
-}) {
-  const n = clipPaths.length;
-  if (n === 0) throw new Error("invalid payload: no clips");
-
-  const w = Math.max(16, Math.round(Number(width) || 1080));
-  const h = Math.max(16, Math.round(Number(height) || 1920));
-  const workDir = dirname(outPath);
-  const scaleVf = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=30,format=yuv420p`;
-
-  let segs;
+function resolveSegmentDurations(n, targetDuration, segmentDurations) {
   if (Array.isArray(segmentDurations) && segmentDurations.length === n) {
-    segs = segmentDurations.map((s) => Math.max(0.5, Number(s) || 0));
+    let segs = segmentDurations.map((s) => Math.max(0.5, Number(s) || 0));
     const sum = segs.reduce((a, b) => a + b, 0);
     if (sum > 0 && Math.abs(sum - targetDuration) > 0.05) {
       const scale = targetDuration / sum;
       segs = segs.map((s) => Number((s * scale).toFixed(3)));
     }
-  } else {
-    const even = Number((targetDuration / n).toFixed(3));
-    segs = Array.from({ length: n }, () => even);
+    return segs;
   }
+  const even = Number((targetDuration / n).toFixed(3));
+  return Array.from({ length: n }, () => even);
+}
+
+const SCALE_VF = (w, h) =>
+  `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=30,format=yuv420p`;
+
+/**
+ * One filter_complex: scale/concat/(optional ASS) → single libx264 encode.
+ * Uses more peak RAM than the segment path; avoid on ~1–2 GB hosts.
+ */
+async function renderSinglePass({
+  clipPaths,
+  audioPath,
+  assPath,
+  outPath,
+  segs,
+  width,
+  height,
+}) {
+  const n = clipPaths.length;
+  const scaleChain = SCALE_VF(width, height);
+
+  const inputs = [];
+  for (let i = 0; i < n; i += 1) {
+    inputs.push("-stream_loop", "-1", "-t", String(segs[i]), "-i", clipPaths[i]);
+  }
+  inputs.push("-i", audioPath);
+
+  const parts = [];
+  for (let i = 0; i < n; i += 1) {
+    parts.push(`[${i}:v]${scaleChain},setpts=PTS-STARTPTS[v${i}]`);
+  }
+  const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join("");
+  parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
+
+  let vMap = "[vcat]";
+  if (assPath) {
+    parts.push(`[vcat]ass='${escapeFilterPath(assPath)}'[vout]`);
+    vMap = "[vout]";
+  }
+
+  console.log(
+    JSON.stringify({
+      event: "ffmpeg_single_pass",
+      clips: n,
+      captions: Boolean(assPath),
+    })
+  );
+
+  await run(
+    FFMPEG,
+    [
+      "-y",
+      ...THREAD_ARGS,
+      ...inputs,
+      "-filter_complex",
+      parts.join(";"),
+      "-map",
+      vMap,
+      "-map",
+      `${n}:a`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "23",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      outPath,
+    ],
+    "ffmpeg"
+  );
+}
+
+/**
+ * Encode one clip at a time, concat, then mux audio (re-encode only if ASS).
+ * Lower peak RAM; with captions this is two lossy x264 stages.
+ */
+async function renderLowMemSegments({
+  clipPaths,
+  audioPath,
+  assPath,
+  outPath,
+  segs,
+  width,
+  height,
+}) {
+  const n = clipPaths.length;
+  const workDir = dirname(outPath);
+  const scaleVf = SCALE_VF(width, height);
 
   const segPaths = [];
   for (let i = 0; i < n; i += 1) {
@@ -253,7 +332,6 @@ export async function renderVerticalMp4({
   ];
 
   if (assPath) {
-    // Must re-encode to burn captions.
     finalArgs.push(
       "-vf",
       `ass='${escapeFilterPath(assPath)}'`,
@@ -296,6 +374,49 @@ export async function renderVerticalMp4({
   }
 
   await run(FFMPEG, finalArgs, "ffmpeg");
+}
+
+/**
+ * Stitch clips, burn ASS, mux TTS audio at the chosen aspect ratio.
+ *
+ * Default: one filter_complex → single libx264 encode (scale + concat + ASS).
+ * Set FFMPEG_LOW_MEM=1 on ~1–2 GB hosts to encode one clip at a time instead
+ * (avoids OOM; with captions that path re-encodes after concat).
+ */
+export async function renderVerticalMp4({
+  clipPaths,
+  audioPath,
+  assPath,
+  outPath,
+  targetDuration,
+  segmentDurations,
+  width = 1080,
+  height = 1920,
+}) {
+  const n = clipPaths.length;
+  if (n === 0) throw new Error("invalid payload: no clips");
+
+  const w = Math.max(16, Math.round(Number(width) || 1080));
+  const h = Math.max(16, Math.round(Number(height) || 1920));
+  const segs = resolveSegmentDurations(n, targetDuration, segmentDurations);
+  const args = {
+    clipPaths,
+    audioPath,
+    assPath,
+    outPath,
+    segs,
+    width: w,
+    height: h,
+  };
+
+  if (LOW_MEM) {
+    console.log(JSON.stringify({ event: "ffmpeg_mode", mode: "low_mem_segments" }));
+    await renderLowMemSegments(args);
+    return;
+  }
+
+  console.log(JSON.stringify({ event: "ffmpeg_mode", mode: "single_pass" }));
+  await renderSinglePass(args);
 }
 
 export async function grabThumbnail(videoPath, outPath) {
