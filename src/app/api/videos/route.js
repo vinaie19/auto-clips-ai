@@ -19,7 +19,7 @@ export async function GET() {
     const { data, error } = await supabase
       .from("videos")
       .select(
-        "id, prompt, tone, subtitle_theme, script, video_url, thumbnail_url, status, render_id, error, attempts, created_at, payload"
+        "id, prompt, tone, subtitle_theme, script, video_url, thumbnail_url, status, progress, render_id, error, attempts, created_at, payload"
       )
       .eq("clerk_user_id", userId)
       .order("created_at", { ascending: false })

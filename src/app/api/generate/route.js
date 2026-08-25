@@ -10,7 +10,6 @@ import {
   MAX_ATTEMPTS_DEFAULT,
   SUBTITLE_THEMES,
   VIDEO_TONES,
-  VIDEO_DURATIONS,
   ASPECT_RATIOS,
   resolveCaptionsEnabled,
   resolveTtsVoice,
@@ -18,75 +17,11 @@ import {
   resolveAspectRatio,
   creditsForDuration,
 } from "@/lib/render-constants";
-import { planVisualBeats } from "@/lib/visual-queries";
-import { fetchBrollForQueries } from "@/lib/pexels-broll";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
-
-const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
-
-async function draftScript(topic, tone, targetDurationSeconds) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || apiKey === "your_openai_key_here") {
-    throw new Error("OPENAI_API_KEY is not configured on the server.");
-  }
-
-  const toneGuide =
-    VIDEO_TONES[tone]?.scriptGuide || VIDEO_TONES.Cinematic.scriptGuide;
-  const durationMeta =
-    VIDEO_DURATIONS[targetDurationSeconds] || VIDEO_DURATIONS[45];
-
-  const response = await fetch(OPENAI_CHAT_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0.85,
-      messages: [
-        {
-          role: "system",
-          content: `You write punchy short-form video scripts for about ${durationMeta.seconds} seconds of spoken narration (~${durationMeta.wordRange} words).
-
-Hard rules:
-- Write exactly ${durationMeta.sentenceRange || "4 to 8"} short sentences (each ends with . ! or ?).
-- Aim for about ${durationMeta.wordRange} spoken words so narration fills ~${durationMeta.seconds} seconds (do not write a short 30s script when the target is longer).
-- Prefer one clear action or image per sentence (easier to match B-roll).
-- Every sentence must be filmable: name concrete objects, places, hands, or actions a stock camera can show.
-- Do NOT write abstract-only lines (success, mindset, growth, vibes, innovation, battleground, creativity, focus, inspiration, hustle) unless tied to a visible action.
-- The final sentence must still be filmable (a concrete closing image), never a slogan or metaphor.
-- Prefer common stock-video actions (pour coffee, stir, type, walk, open a notebook, push-ups, squats, jumping jacks) over rare ones.
-- For workouts / how-tos: one named exercise or step per sentence (e.g. "Do bodyweight squats on the floor."). Avoid form lectures ("knees behind toes"), timers-as-subject, and multi-move lines.
-- Honor topic constraints (e.g. no equipment → bodyweight / home, never gym machines).
-- Return clean plain text only — no markdown, no bullets, no quotes, no labels, no stage directions.`,
-        },
-        {
-          role: "user",
-          content: `Topic/niche: ${topic}
-Tone: ${tone}. ${toneGuide}
-Target length: ${durationMeta.seconds} seconds (~${durationMeta.wordRange} spoken words, ${durationMeta.sentenceRange || "4–8"} sentences).
-Write filmable sentences that vertical stock B-roll can illustrate line by line. Prefer actions Pexels commonly has. Fill the full target length — end on a concrete image, not a motivational closer.`,
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    console.error("OpenAI error:", detail);
-    throw new Error("Failed to draft script with OpenAI.");
-  }
-
-  const data = await response.json();
-  const script = data?.choices?.[0]?.message?.content?.trim();
-  if (!script) throw new Error("OpenAI returned an empty script.");
-
-  return script.replace(/^```[\s\S]*?```$/g, "").trim();
-}
+/** Thin enqueue only — script/B-roll run on the worker. */
+export const maxDuration = 30;
 
 export async function POST(request) {
   try {
@@ -149,19 +84,6 @@ export async function POST(request) {
       );
     }
 
-    // 1) Filmable script  2) One B-roll query per spoken line  3) Pexels per beat
-    const script = await draftScript(topic, tone, targetDurationSeconds);
-    const visualPlan = await planVisualBeats(script, topic);
-    const { pexelsVideoUrls, visualBeats } = await fetchBrollForQueries(
-      visualPlan.queries,
-      {
-        weights: visualPlan.weights,
-        lines: visualPlan.lines,
-        motif: visualPlan.motif,
-        orientation: ASPECT_RATIOS[aspectRatio]?.orientation,
-      }
-    );
-
     let updatedProfile;
     try {
       updatedProfile = await deductCreditIfNeeded(profile, creditCost);
@@ -180,13 +102,7 @@ export async function POST(request) {
 
     const supabase = getSupabaseAdmin();
     const payload = {
-      script,
-      pexelsVideoUrls,
-      visualBeats,
-      visualQueries: visualPlan.queries,
-      visualLines: visualPlan.lines,
-      visualMotif: visualPlan.motif,
-      visualAvoid: visualPlan.avoid,
+      topic,
       tone,
       subtitleTheme,
       voice,
@@ -203,7 +119,7 @@ export async function POST(request) {
         prompt: topic,
         tone,
         subtitle_theme: subtitleTheme,
-        script,
+        script: null,
         render_id: null,
         video_url: null,
         thumbnail_url: null,
@@ -213,6 +129,7 @@ export async function POST(request) {
         next_visible_at: new Date().toISOString(),
         payload,
         error: null,
+        progress: "queued",
         credit_refunded: false,
         credits_charged: creditCost,
       })
@@ -237,15 +154,9 @@ export async function POST(request) {
       renderId: videoRow.id,
       videoId: videoRow.id,
       statusUrl: `/api/generate/status?id=${encodeURIComponent(videoRow.id)}`,
-      script,
-      visualMotif: visualPlan.motif,
-      visualBeats: visualBeats.map((b) => ({
-        query: b.query,
-        weight: b.weight,
-        line: b.line || null,
-        verified: Boolean(b.verified),
-        retried: Boolean(b.retried),
-      })),
+      script: null,
+      visualMotif: null,
+      visualBeats: [],
       freeCreditsRemaining: updatedProfile.free_credits_remaining,
       isPremium: updatedProfile.is_premium,
       creditsCharged: creditCost,

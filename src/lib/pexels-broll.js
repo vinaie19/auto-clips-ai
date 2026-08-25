@@ -10,11 +10,13 @@ const PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/v1/videos/search";
 export const MAX_VISUAL_BEATS = 15;
 export const MIN_VISUAL_BEATS = 4;
 /** Pexels hits to try per search query before a betterQuery round. */
-export const MAX_VERIFY_CANDIDATES = 3;
+export const MAX_VERIFY_CANDIDATES = 5;
 /** Max vision API calls per beat (keep generate fast). */
 export const MAX_VISION_ATTEMPTS = 2;
 /** Max distinct Pexels search queries per beat (initial + one betterQuery). */
 export const MAX_QUERY_ROUNDS = 2;
+/** Extra unused clips to grab when vision path finds nothing (no reuse of prior beat). */
+export const MAX_FALLBACK_CANDIDATES = 8;
 
 /**
  * Prefer 720–1080p mp4; bias toward preferred orientation.
@@ -136,6 +138,7 @@ async function collectClipCandidates(
 /**
  * Pick clip and vision-verify vs spoken line.
  * Retries a few candidates + one betterQuery round, or keeps best still.
+ * Rejected candidates stay reusable for later beats (not added to usedUrls).
  * @returns {Promise<{ url: string, query: string, verified: boolean, retried: boolean } | null>}
  */
 export async function resolveVerifiedClip({
@@ -150,6 +153,8 @@ export async function resolveVerifiedClip({
 
   const spoken = String(line || "").trim() || initialQuery;
   const triedQueries = new Set();
+  /** URLs already judged this beat (rejects) — keep out of usedUrls until accept. */
+  const triedUrls = new Set();
   let searchQuery = initialQuery;
   let visionAttempts = 0;
   let queryRounds = 0;
@@ -169,10 +174,11 @@ export async function resolveVerifiedClip({
     triedQueries.add(qKey);
     queryRounds += 1;
 
+    const blocked = new Set([...usedUrls, ...triedUrls]);
     const candidates = await collectClipCandidates(
       apiKey,
       searchQuery,
-      usedUrls,
+      blocked,
       preferredOrientation,
       MAX_VERIFY_CANDIDATES
     );
@@ -192,9 +198,9 @@ export async function resolveVerifiedClip({
 
     for (const hit of candidates) {
       if (visionAttempts >= MAX_VISION_ATTEMPTS) break;
+      if (triedUrls.has(hit.url) || usedUrls.has(hit.url)) continue;
 
       if (!hit.imageUrl) {
-        // No still to judge — accept rather than block.
         usedUrls.add(hit.url);
         return {
           url: hit.url,
@@ -205,6 +211,7 @@ export async function resolveVerifiedClip({
       }
 
       visionAttempts += 1;
+      triedUrls.add(hit.url);
       const verdict = await verifyClipAgainstLine({
         line: spoken,
         query: searchQuery,
@@ -235,7 +242,6 @@ export async function resolveVerifiedClip({
         };
       }
 
-      usedUrls.add(hit.url);
       if (!bestRejected || verdict.score >= bestRejected.score) {
         bestRejected = {
           url: hit.url,
@@ -256,7 +262,6 @@ export async function resolveVerifiedClip({
       );
     }
 
-    // Start another search round with betterQuery / line fallback.
     const nextQuery =
       lastBetterQuery && !triedQueries.has(lastBetterQuery.toLowerCase())
         ? lastBetterQuery
@@ -279,7 +284,8 @@ export async function resolveVerifiedClip({
     searchQuery = nextQuery;
   }
 
-  if (bestRejected) {
+  if (bestRejected && !usedUrls.has(bestRejected.url)) {
+    usedUrls.add(bestRejected.url);
     console.log(
       JSON.stringify({
         event: "clip_verify_keep_best",
@@ -302,8 +308,39 @@ export async function resolveVerifiedClip({
 }
 
 /**
+ * First unused mp4 for a query (no vision) — keeps cuts visually distinct.
+ * @returns {Promise<{ url: string, query: string, verified: boolean, retried: boolean } | null>}
+ */
+export async function pickUnusedClip({
+  apiKey,
+  query,
+  usedUrls,
+  preferredOrientation,
+  limit = MAX_FALLBACK_CANDIDATES,
+}) {
+  const q = String(query || "").trim();
+  if (!q) return null;
+  const candidates = await collectClipCandidates(
+    apiKey,
+    q,
+    usedUrls,
+    preferredOrientation,
+    limit
+  );
+  const hit = candidates.find((c) => c.url && !usedUrls.has(c.url));
+  if (!hit) return null;
+  usedUrls.add(hit.url);
+  return {
+    url: hit.url,
+    query: q,
+    verified: false,
+    retried: true,
+  };
+}
+
+/**
  * Map line-bound visual beat queries → Pexels URLs (ordered).
- * Each pick is vision-checked; retries until match or safety caps.
+ * Prefers unique URLs per beat — never reuses the previous beat's clip.
  *
  * @param {string[]} queries
  * @param {{ weights?: number[], lines?: string[], motif?: string, orientation?: string }} [opts]
@@ -336,12 +373,14 @@ export async function fetchBrollForQueries(queries, opts = {}) {
 
   const usedUrls = new Set();
   const visualBeats = [];
-  let lastGoodUrl = null;
 
   for (let i = 0; i < cleaned.length; i++) {
     const query = cleaned[i];
     const line =
       typeof lines[i] === "string" && lines[i].trim() ? lines[i].trim() : null;
+    const lineFallback = line
+      ? line.split(/\s+/).slice(0, 5).join(" ").trim()
+      : "";
 
     let resolved = await resolveVerifiedClip({
       apiKey,
@@ -361,17 +400,33 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       });
     }
 
-    if (!resolved?.url && lastGoodUrl) {
-      resolved = {
-        url: lastGoodUrl,
-        query,
-        verified: false,
-        retried: false,
-      };
+    // Unique unused clip only — never reuse the previous beat's URL.
+    if (!resolved?.url) {
+      const fallbackQueries = [query, lineFallback, motif].filter(
+        (q, idx, arr) => q && arr.indexOf(q) === idx
+      );
+      for (const fq of fallbackQueries) {
+        resolved = await pickUnusedClip({
+          apiKey,
+          query: fq,
+          usedUrls,
+          preferredOrientation,
+        });
+        if (resolved?.url) {
+          console.log(
+            JSON.stringify({
+              event: "clip_unique_fallback",
+              index: i,
+              query: fq,
+              line: (line || "").slice(0, 80),
+            })
+          );
+          break;
+        }
+      }
     }
 
     if (resolved?.url) {
-      lastGoodUrl = resolved.url;
       const weight = Number(weights[i]);
       visualBeats.push({
         query: resolved.query || query,
@@ -381,6 +436,15 @@ export async function fetchBrollForQueries(queries, opts = {}) {
         verified: Boolean(resolved.verified),
         retried: Boolean(resolved.retried),
       });
+    } else {
+      console.log(
+        JSON.stringify({
+          event: "clip_beat_skipped",
+          index: i,
+          query,
+          line: (line || "").slice(0, 80),
+        })
+      );
     }
   }
 
@@ -388,21 +452,36 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     throw new Error("Failed to fetch any related B-roll clips from Pexels.");
   }
 
-  while (visualBeats.length < Math.min(MIN_VISUAL_BEATS, cleaned.length) && lastGoodUrl) {
-    const last = visualBeats[visualBeats.length - 1];
-    visualBeats.push({
-      query: last.query,
-      url: lastGoodUrl,
-      line: last.line,
-      weight: last.weight,
-      verified: false,
-      retried: false,
-    });
+  if (visualBeats.length < Math.min(MIN_VISUAL_BEATS, cleaned.length)) {
+    const err = new Error(
+      `Only found ${visualBeats.length} unique B-roll clips (need ${MIN_VISUAL_BEATS}).`
+    );
+    err.status = 502;
+    throw err;
   }
+
+  const uniqueCount = new Set(visualBeats.map((b) => b.url)).size;
+  console.log(
+    JSON.stringify({
+      event: "broll_unique_summary",
+      beats: visualBeats.length,
+      unique_urls: uniqueCount,
+      queries: cleaned.length,
+    })
+  );
 
   return {
     pexelsVideoUrls: visualBeats.map((b) => b.url),
     visualBeats,
     motif,
   };
+}
+
+/** @param {{ url?: string }[]} beats */
+export function countUniqueBeatUrls(beats) {
+  return new Set(
+    (Array.isArray(beats) ? beats : [])
+      .map((b) => b?.url)
+      .filter((u) => typeof u === "string" && u.length > 0)
+  ).size;
 }

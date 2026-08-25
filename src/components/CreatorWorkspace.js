@@ -60,15 +60,27 @@ const TTS_VOICES = [
   { id: "shimmer", label: "Shimmer", description: "Soft, expressive" },
 ];
 
-const PRE_QUEUE_LOADER = "Drafting AI Script & Queueing Render...";
+const PRE_QUEUE_LOADER = "Queueing your render...";
 
-function formatStatus(status) {
+function formatStatus(status, progress) {
   if (!status) return "Unknown";
   if (status === "done") return "Ready";
   if (status === "failed") return "Failed";
-  if (status === "running" || status === "claimed") return "Rendering";
+  if (progress === "preparing") return "Preparing";
+  if (progress === "rendering") return "Rendering";
+  if (status === "running" || status === "claimed") {
+    return progress === "preparing" ? "Preparing" : "Rendering";
+  }
   if (status === "pending" || status === "queued") return "Queued";
   return status;
+}
+
+function busyStatusMessage(status, progress) {
+  const label = formatStatus(status, progress);
+  if (label === "Queued") return "Positioned in render queue...";
+  if (label === "Preparing") return "Writing script & picking B-roll...";
+  if (label === "Rendering") return "Stitching clips, captions & voiceover...";
+  return "Working on your video…";
 }
 
 export function checkoutSettlementGranted({ beforeCredits, currentCredits }) {
@@ -669,6 +681,7 @@ export default function CreatorWorkspace() {
           if (videoId) {
             patchHistoryItem(videoId, {
               status,
+              progress: data.progress || null,
               video_url: data.url || null,
               thumbnail_url: data.poster || null,
               error: data.error || null,
@@ -1240,12 +1253,12 @@ export default function CreatorWorkspace() {
                                 <span className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-300" />
                               )}
                               <span className="text-xs font-medium text-zinc-400">
-                                {formatStatus(item.status)}
+                                {formatStatus(item.status, item.progress)}
                               </span>
                             </div>
                           )}
                           <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-100 backdrop-blur">
-                            {formatStatus(item.status)}
+                            {formatStatus(item.status, item.progress)}
                           </span>
                         </div>
                         <div className="space-y-1 p-3">
@@ -1279,7 +1292,7 @@ export default function CreatorWorkspace() {
                     {selectedVideo.prompt || "Untitled clip"}
                   </h1>
                   <p className="mt-1 text-sm text-zinc-400">
-                    {formatStatus(selectedVideo.status)} ·{" "}
+                    {formatStatus(selectedVideo.status, selectedVideo.progress)} ·{" "}
                     {formatDate(selectedVideo.created_at)}
                   </p>
                 </div>
@@ -1305,11 +1318,10 @@ export default function CreatorWorkspace() {
                         <div className="animate-scan pointer-events-none absolute inset-x-0 h-24 bg-gradient-to-b from-transparent via-indigo-400/25 to-transparent" />
                         <span className="relative z-10 mb-4 h-8 w-8 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-300" />
                         <p className="relative z-10 text-sm font-medium text-zinc-100">
-                          {formatStatus(selectedVideo.status) === "Queued"
-                            ? "Positioned in render queue..."
-                            : formatStatus(selectedVideo.status) === "Rendering"
-                              ? "Stitching clips, captions & voiceover..."
-                              : "Rendering…"}
+                          {busyStatusMessage(
+                            selectedVideo.status,
+                            selectedVideo.progress
+                          )}
                         </p>
                         <p className="relative z-10 mt-2 text-xs text-zinc-500">
                           Status updates every few seconds
@@ -1360,7 +1372,7 @@ export default function CreatorWorkspace() {
                     <div>
                       <dt className="text-xs text-zinc-500">Status</dt>
                       <dd className="mt-0.5 font-medium text-zinc-100">
-                        {formatStatus(selectedVideo.status)}
+                        {formatStatus(selectedVideo.status, selectedVideo.progress)}
                       </dd>
                     </div>
                     <div>

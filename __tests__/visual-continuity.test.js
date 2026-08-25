@@ -11,6 +11,7 @@ import {
   computeSegmentDurations,
   splitScriptSentences,
 } from "@/lib/segment-durations";
+import { countUniqueBeatUrls } from "@/lib/pexels-broll";
 
 describe("isVagueStockQuery / hardenStockQuery", () => {
   it("flags vague intensity / filler queries", () => {
@@ -154,5 +155,18 @@ describe("computeSegmentDurations", () => {
     const segs = computeSegmentDurations(40, 3, { weights: [4, 12, 4] });
     expect(segs[1]).toBeGreaterThan(segs[0]);
     expect(segs[1]).toBeGreaterThan(segs[2]);
+  });
+});
+
+describe("countUniqueBeatUrls", () => {
+  it("counts distinct clip URLs (no last-clip padding)", () => {
+    expect(
+      countUniqueBeatUrls([
+        { url: "https://a.mp4" },
+        { url: "https://b.mp4" },
+        { url: "https://a.mp4" },
+      ])
+    ).toBe(2);
+    expect(countUniqueBeatUrls([])).toBe(0);
   });
 });

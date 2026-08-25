@@ -9,6 +9,7 @@ import { resolveCaptionTimings } from "./align-captions.js";
 import { renderVerticalMp4, grabThumbnail, fitAudioToTarget } from "./ffmpeg.js";
 import { uploadRenderArtifacts } from "./upload.js";
 import { computeSegmentDurations } from "./segment-durations.js";
+import { isPayloadPrepared, prepareJobAssets } from "./prepare/index.js";
 
 const ASPECT_SIZES = {
   "9:16": { width: 1080, height: 1920 },
@@ -17,72 +18,93 @@ const ASPECT_SIZES = {
 };
 
 /**
- * Full render: TTS ∥ download → captions → FFmpeg → Storage.
+ * Prepare (if needed) → TTS ∥ download → captions → FFmpeg → Storage.
+ * Thin-enqueue jobs only have topic/settings; script + Pexels run here.
  * @param {import("@supabase/supabase-js").SupabaseClient} supabase
  * @param {object} job - videos row
  * @param {{ bucket?: string }} [opts]
  */
 export async function runRenderPipeline(supabase, job, opts = {}) {
   const bucket = opts.bucket || process.env.RENDERS_BUCKET || "renders";
-  const payload = job.payload && typeof job.payload === "object" ? job.payload : {};
-  const script = String(payload.script || job.script || "").trim();
+
+  let activeJob = job;
+  if (!isPayloadPrepared(activeJob)) {
+    activeJob = await prepareJobAssets(supabase, activeJob);
+  }
+
+  const payload =
+    activeJob.payload && typeof activeJob.payload === "object"
+      ? activeJob.payload
+      : {};
+  const script = String(payload.script || activeJob.script || "").trim();
   if (!script) {
     const err = new Error("empty script");
     err.status = 400;
     throw err;
   }
 
-    const urls = Array.isArray(payload.visualBeats)
-      ? payload.visualBeats.map((b) => b?.url).filter(Boolean)
-      : [];
-    const pexelsUrls =
-      urls.length > 0
-        ? urls
-        : Array.isArray(payload.pexelsVideoUrls)
-          ? payload.pexelsVideoUrls.filter((u) => typeof u === "string" && u.length > 0)
-          : [];
-    if (pexelsUrls.length === 0) {
-      const err = new Error("invalid payload: missing pexelsVideoUrls");
-      err.status = 400;
-      throw err;
-    }
+  const urls = Array.isArray(payload.visualBeats)
+    ? payload.visualBeats.map((b) => b?.url).filter(Boolean)
+    : [];
+  const pexelsUrls =
+    urls.length > 0
+      ? urls
+      : Array.isArray(payload.pexelsVideoUrls)
+        ? payload.pexelsVideoUrls.filter((u) => typeof u === "string" && u.length > 0)
+        : [];
+  if (pexelsUrls.length === 0) {
+    const err = new Error("invalid payload: missing pexelsVideoUrls");
+    err.status = 502;
+    throw err;
+  }
 
-    const voice = payload.voice || "nova";
-    const subtitleTheme = payload.subtitleTheme || job.subtitle_theme || "Viral Yellow";
-    const captionsEnabled = payload.captionsEnabled !== false;
-    const targetDurationSeconds = [30, 45, 60].includes(Number(payload.targetDurationSeconds))
-      ? Number(payload.targetDurationSeconds)
-      : 45;
-    const aspectRatio = ASPECT_SIZES[payload.aspectRatio]
-      ? payload.aspectRatio
-      : "9:16";
-    const { width, height } = ASPECT_SIZES[aspectRatio];
-    const workDir = join(tmpdir(), `shortclips-${job.id}-${Date.now()}`);
+  const voice = payload.voice || "nova";
+  const subtitleTheme =
+    payload.subtitleTheme || activeJob.subtitle_theme || "Viral Yellow";
+  const captionsEnabled = payload.captionsEnabled !== false;
+  const targetDurationSeconds = [30, 45, 60].includes(
+    Number(payload.targetDurationSeconds)
+  )
+    ? Number(payload.targetDurationSeconds)
+    : 45;
+  const aspectRatio = ASPECT_SIZES[payload.aspectRatio]
+    ? payload.aspectRatio
+    : "9:16";
+  const { width, height } = ASPECT_SIZES[aspectRatio];
+  const workDir = join(tmpdir(), `shortclips-${activeJob.id}-${Date.now()}`);
 
-    await mkdir(workDir, { recursive: true });
+  await mkdir(workDir, { recursive: true });
 
-    try {
-      const rawAudioPath = join(workDir, "audio-raw.mp3");
-      console.log(
-        JSON.stringify({
-          event: "step_tts",
-          video_id: job.id,
-          voice,
-          target_s: targetDurationSeconds,
-          aspect: aspectRatio,
-        })
-      );
-      console.log(
-        JSON.stringify({
-          event: "step_download",
-          video_id: job.id,
-          clips: pexelsUrls.length,
-          motif: payload.visualMotif || null,
-          queries: Array.isArray(payload.visualBeats)
-            ? payload.visualBeats.map((b) => b.query)
-            : payload.visualQueries || [],
-        })
-      );
+  try {
+    await supabase
+      .from("videos")
+      .update({
+        progress: "rendering",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", activeJob.id);
+
+    const rawAudioPath = join(workDir, "audio-raw.mp3");
+    console.log(
+      JSON.stringify({
+        event: "step_tts",
+        video_id: activeJob.id,
+        voice,
+        target_s: targetDurationSeconds,
+        aspect: aspectRatio,
+      })
+    );
+    console.log(
+      JSON.stringify({
+        event: "step_download",
+        video_id: activeJob.id,
+        clips: pexelsUrls.length,
+        motif: payload.visualMotif || null,
+        queries: Array.isArray(payload.visualBeats)
+          ? payload.visualBeats.map((b) => b.query)
+          : payload.visualQueries || [],
+      })
+    );
       // TTS and clip downloads are independent — overlap for wall-clock savings.
       const [, clipPaths] = await Promise.all([
         synthesizeSpeech(script, voice, rawAudioPath),
@@ -131,7 +153,7 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
         console.log(
           JSON.stringify({
             event: "step_caption_align",
-            video_id: job.id,
+            video_id: activeJob.id,
             blocks: blocks.length,
             raw_s: Number(rawDuration.toFixed(2)),
             fitted_s: Number(duration.toFixed(2)),
@@ -156,7 +178,7 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
       console.log(
         JSON.stringify({
           event: "step_ffmpeg",
-          video_id: job.id,
+          video_id: activeJob.id,
           duration_s: Number(duration.toFixed(2)),
           beats: beatCount,
           segments: segmentDurations,
@@ -182,11 +204,11 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
       console.warn("thumbnail skipped:", err.message);
     }
 
-    console.log(JSON.stringify({ event: "step_upload", video_id: job.id }));
+    console.log(JSON.stringify({ event: "step_upload", video_id: activeJob.id }));
     const uploaded = await uploadRenderArtifacts(supabase, {
       bucket,
-      userId: job.user_id,
-      videoId: job.id,
+      userId: activeJob.user_id,
+      videoId: activeJob.id,
       videoPath: outPath,
       thumbPath: existsSync(thumbPath) ? thumbPath : null,
     });
