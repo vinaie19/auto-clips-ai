@@ -10,6 +10,11 @@ ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=5
 User=ubuntu
+# Soft cap so one runaway encode cannot take down the whole box.
+# Prefer ≥2 GB RAM instance; sequential FFmpeg should stay under ~1 GB peak.
+MemoryHigh=1500M
+MemoryMax=1800M
+OOMPolicy=stop
 
 [Install]
 WantedBy=multi-user.target

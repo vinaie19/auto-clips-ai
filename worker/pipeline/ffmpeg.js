@@ -1,9 +1,19 @@
 import { spawn } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 
 const FFPROBE = ffprobeStatic.path || ffprobeStatic;
 const FFMPEG = ffmpegPath;
+
+/** Cap decode/encode parallelism for small Lightsail boxes (~1–2 GB). */
+const THREAD_ARGS = ["-threads", "1", "-filter_threads", "1"];
+
+/** Escape a path for ffmpeg concat demuxer list files. */
+function escapeConcatPath(p) {
+  return p.replace(/'/g, "'\\''");
+}
 
 function run(bin, args, label = "ffmpeg") {
   return new Promise((resolve, reject) => {
@@ -112,7 +122,7 @@ export async function fitAudioToTarget(audioPath, fittedPath, targetSeconds) {
   const filter = buildAtempoFilter(speed);
   await run(
     FFMPEG,
-    ["-y", "-i", audioPath, "-filter:a", filter, "-vn", fittedPath],
+    ["-y", ...THREAD_ARGS, "-i", audioPath, "-filter:a", filter, "-vn", fittedPath],
     "ffmpeg-atempo"
   );
   const fitted = await probeDurationSeconds(fittedPath);
@@ -125,6 +135,10 @@ export async function fitAudioToTarget(audioPath, fittedPath, targetSeconds) {
 
 /**
  * Stitch clips, burn ASS, mux TTS audio at the chosen aspect ratio.
+ *
+ * Encodes one clip at a time, then concatenates. Opening every input in a
+ * single filter_complex (old approach) OOMs ~1–2 GB Lightsail boxes when
+ * stitching ~10× 1080×1920 streams.
  */
 export async function renderVerticalMp4({
   clipPaths,
@@ -141,6 +155,8 @@ export async function renderVerticalMp4({
 
   const w = Math.max(16, Math.round(Number(width) || 1080));
   const h = Math.max(16, Math.round(Number(height) || 1920));
+  const workDir = dirname(outPath);
+  const scaleVf = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=30,format=yuv420p`;
 
   let segs;
   if (Array.isArray(segmentDurations) && segmentDurations.length === n) {
@@ -155,52 +171,110 @@ export async function renderVerticalMp4({
     segs = Array.from({ length: n }, () => even);
   }
 
-  const inputs = [];
+  const segPaths = [];
   for (let i = 0; i < n; i += 1) {
-    inputs.push("-stream_loop", "-1", "-t", String(segs[i]), "-i", clipPaths[i]);
-  }
-  inputs.push("-i", audioPath);
-
-  const parts = [];
-  for (let i = 0; i < n; i += 1) {
-    parts.push(
-      `[${i}:v]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=30,format=yuv420p,setpts=PTS-STARTPTS[v${i}]`
+    const segPath = join(workDir, `seg-${i}.mp4`);
+    console.log(
+      JSON.stringify({
+        event: "ffmpeg_seg",
+        index: i,
+        of: n,
+        duration_s: segs[i],
+      })
     );
-  }
-  const concatIn = Array.from({ length: n }, (_, i) => `[v${i}]`).join("");
-  parts.push(`${concatIn}concat=n=${n}:v=1:a=0[vcat]`);
-  if (assPath) {
-    parts.push(`[vcat]ass='${escapeFilterPath(assPath)}'[vout]`);
-  } else {
-    parts.push(`[vcat]null[vout]`);
+    await run(
+      FFMPEG,
+      [
+        "-y",
+        ...THREAD_ARGS,
+        "-stream_loop",
+        "-1",
+        "-t",
+        String(segs[i]),
+        "-i",
+        clipPaths[i],
+        "-vf",
+        scaleVf,
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        segPath,
+      ],
+      `ffmpeg-seg-${i}`
+    );
+    segPaths.push(segPath);
   }
 
-  const args = [
+  const listPath = join(workDir, "concat.txt");
+  await writeFile(
+    listPath,
+    segPaths.map((p) => `file '${escapeConcatPath(p)}'`).join("\n") + "\n",
+    "utf8"
+  );
+
+  const finalArgs = [
     "-y",
-    ...inputs,
-    "-filter_complex",
-    parts.join(";"),
-    "-map",
-    "[vout]",
-    "-map",
-    `${n}:a`,
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "23",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "192k",
-    "-shortest",
-    "-movflags",
-    "+faststart",
-    outPath,
+    ...THREAD_ARGS,
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    listPath,
+    "-i",
+    audioPath,
   ];
 
-  await run(FFMPEG, args, "ffmpeg");
+  if (assPath) {
+    // Must re-encode to burn captions.
+    finalArgs.push(
+      "-vf",
+      `ass='${escapeFilterPath(assPath)}'`,
+      "-map",
+      "0:v",
+      "-map",
+      "1:a",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "23",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      outPath
+    );
+  } else {
+    finalArgs.push(
+      "-map",
+      "0:v",
+      "-map",
+      "1:a",
+      "-c:v",
+      "copy",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      outPath
+    );
+  }
+
+  await run(FFMPEG, finalArgs, "ffmpeg");
 }
 
 export async function grabThumbnail(videoPath, outPath) {
