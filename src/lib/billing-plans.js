@@ -71,20 +71,43 @@ export function buildTopupVariantSet(env = process.env) {
   return buildTopupPriceSet(env);
 }
 
-/** Public Paddle price ids for checkout overlay. */
-export function getPaddlePriceIds(env = process.env) {
+/** Public Paddle price ids for checkout overlay (client + server). */
+export function getPaddlePriceIds(env = null) {
+  // Direct `process.env.NEXT_PUBLIC_*` reads are required for Next.js to
+  // inline values into the browser bundle. `env.NEXT_PUBLIC_*` stays empty
+  // on the client when env is process.env.
+  if (env) {
+    return {
+      starterSub:
+        env.NEXT_PUBLIC_PADDLE_PRICE_STARTER || env.PADDLE_PRICE_STARTER || "",
+      creatorSub:
+        env.NEXT_PUBLIC_PADDLE_PRICE_CREATOR || env.PADDLE_PRICE_CREATOR || "",
+      starterTopup:
+        env.NEXT_PUBLIC_PADDLE_PRICE_STARTER_TOPUP ||
+        env.PADDLE_PRICE_STARTER_TOPUP ||
+        "",
+      creatorTopup:
+        env.NEXT_PUBLIC_PADDLE_PRICE_CREATOR_TOPUP ||
+        env.PADDLE_PRICE_CREATOR_TOPUP ||
+        "",
+    };
+  }
   return {
     starterSub:
-      env.NEXT_PUBLIC_PADDLE_PRICE_STARTER || env.PADDLE_PRICE_STARTER || "",
+      process.env.NEXT_PUBLIC_PADDLE_PRICE_STARTER ||
+      process.env.PADDLE_PRICE_STARTER ||
+      "",
     creatorSub:
-      env.NEXT_PUBLIC_PADDLE_PRICE_CREATOR || env.PADDLE_PRICE_CREATOR || "",
+      process.env.NEXT_PUBLIC_PADDLE_PRICE_CREATOR ||
+      process.env.PADDLE_PRICE_CREATOR ||
+      "",
     starterTopup:
-      env.NEXT_PUBLIC_PADDLE_PRICE_STARTER_TOPUP ||
-      env.PADDLE_PRICE_STARTER_TOPUP ||
+      process.env.NEXT_PUBLIC_PADDLE_PRICE_STARTER_TOPUP ||
+      process.env.PADDLE_PRICE_STARTER_TOPUP ||
       "",
     creatorTopup:
-      env.NEXT_PUBLIC_PADDLE_PRICE_CREATOR_TOPUP ||
-      env.PADDLE_PRICE_CREATOR_TOPUP ||
+      process.env.NEXT_PUBLIC_PADDLE_PRICE_CREATOR_TOPUP ||
+      process.env.PADDLE_PRICE_CREATOR_TOPUP ||
       "",
   };
 }

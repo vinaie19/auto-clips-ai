@@ -1,8 +1,14 @@
 "use client";
 
-import { SignInButton, UserButton, useAuth } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import { BILLING_PACKS, getPaddlePriceIds } from "@/lib/billing-plans";
-import { isPaddleConfigured, openPaddleCheckout } from "@/lib/paddle-client";
+import {
+  closePaddleCheckout,
+  isPaddleConfigured,
+  openPaddleCheckout,
+  PADDLE_FRAME_TARGET,
+  setPaddleCheckoutListener,
+} from "@/lib/paddle-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SUBTITLE_THEMES,
@@ -63,6 +69,15 @@ function formatStatus(status) {
   if (status === "running" || status === "claimed") return "Rendering";
   if (status === "pending" || status === "queued") return "Queued";
   return status;
+}
+
+export function checkoutSettlementGranted({ beforeCredits, currentCredits }) {
+  return (
+    beforeCredits != null &&
+    Number.isFinite(Number(beforeCredits)) &&
+    Number.isFinite(Number(currentCredits)) &&
+    Number(currentCredits) > Number(beforeCredits)
+  );
 }
 
 function formatDate(value) {
@@ -320,6 +335,8 @@ export default function CreatorWorkspace() {
   const [loaderText, setLoaderText] = useState(PRE_QUEUE_LOADER);
   const [error, setError] = useState(null);
   const [showPaywall, setShowPaywall] = useState(false);
+  /** When set, paywall shows the branded inline Paddle frame for this price. */
+  const [checkoutPriceId, setCheckoutPriceId] = useState(null);
   const [credits, setCredits] = useState(null);
   const [isPremium, setIsPremium] = useState(false);
   const [history, setHistory] = useState([]);
@@ -329,28 +346,141 @@ export default function CreatorWorkspace() {
   const previewAudioRef = useRef(null);
   const previewUrlRef = useRef(null);
   const mainRef = useRef(null);
+  const creditsBeforeCheckoutRef = useRef(null);
+
+  const refreshProfile = useCallback(async () => {
+    const response = await fetch("/api/me", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to load profile.");
+    setCredits(data.freeCreditsRemaining);
+    setIsPremium(Boolean(data.isPremium));
+    return data;
+  }, []);
+
+  const dismissPaywall = useCallback(() => {
+    setCheckoutPriceId(null);
+    setShowPaywall(false);
+    setError(null);
+    void closePaddleCheckout();
+  }, []);
+
+  /** After Paddle pays, close overlays and poll until webhook grants credits. */
+  const settleAfterCheckout = useCallback(async () => {
+    await closePaddleCheckout();
+    setCheckoutPriceId(null);
+    setShowPaywall(false);
+    setError(null);
+
+    let before = creditsBeforeCheckoutRef.current;
+    if (before == null && typeof window !== "undefined") {
+      const raw = sessionStorage.getItem("paddle_credits_before");
+      if (raw != null && raw !== "") before = Number(raw);
+    }
+    for (let i = 0; i < 12; i += 1) {
+      try {
+        const data = await refreshProfile();
+        if (
+          checkoutSettlementGranted({
+            beforeCredits: before,
+            currentCredits: data.freeCreditsRemaining,
+          })
+        ) {
+          if (typeof window !== "undefined") {
+            sessionStorage.removeItem("paddle_credits_before");
+          }
+          return;
+        }
+      } catch {
+        // Keep polling — webhook may still be in flight.
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }, [refreshProfile]);
+
+  useEffect(() => {
+    setPaddleCheckoutListener((event) => {
+      const name = String(event?.name || "");
+      if (name === "checkout.completed") {
+        // Prefer a full reload via successUrl; this is a fallback if still on-page.
+        const successUrl = `${window.location.origin}/?checkout=success`;
+        if (!window.location.search.includes("checkout=success")) {
+          window.location.assign(successUrl);
+          return;
+        }
+        void settleAfterCheckout();
+      }
+    });
+    return () => setPaddleCheckoutListener(null);
+  }, [settleAfterCheckout]);
+
+  // Landed from Paddle successUrl redirect — drop query and refresh credits.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("checkout") !== "success") return undefined;
+
+    window.history.replaceState({}, "", window.location.pathname);
+    setCheckoutPriceId(null);
+    setShowPaywall(false);
+    void settleAfterCheckout();
+    return undefined;
+  }, [settleAfterCheckout]);
 
   const startCheckout = useCallback(
-    async (priceId) => {
+    (priceId) => {
       const id = String(priceId || "").trim();
-      if (!id) {
+      if (!paddleReady) {
+        setError(
+          "Billing is not configured yet. Set NEXT_PUBLIC_PADDLE_CLIENT_TOKEN in .env.local and restart npm run dev."
+        );
         setShowPaywall(true);
         return;
       }
-      if (!paddleReady) {
+      if (!id) {
         setError(
-          "Billing is not configured yet. Set NEXT_PUBLIC_PADDLE_CLIENT_TOKEN and price ids."
+          "Missing Paddle price id. Set NEXT_PUBLIC_PADDLE_PRICE_* in .env.local and restart npm run dev."
         );
+        setShowPaywall(true);
         return;
       }
+      setError(null);
+      creditsBeforeCheckoutRef.current = credits;
       try {
-        await openPaddleCheckout(id, clerkUserId);
-      } catch (err) {
-        setError(err?.message || "Could not open checkout.");
+        if (credits != null && Number.isFinite(Number(credits))) {
+          sessionStorage.setItem("paddle_credits_before", String(credits));
+        } else {
+          sessionStorage.removeItem("paddle_credits_before");
+        }
+      } catch {
+        // ignore
       }
+      setShowPaywall(true);
+      setCheckoutPriceId(id);
     },
-    [clerkUserId, paddleReady]
+    [credits, paddleReady]
   );
+
+  // Mount branded inline checkout once the frame element is in the DOM.
+  useEffect(() => {
+    if (!checkoutPriceId || !showPaywall) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await openPaddleCheckout(checkoutPriceId, clerkUserId);
+        } catch (err) {
+          if (!cancelled) {
+            setError(err?.message || "Could not open checkout.");
+            setCheckoutPriceId(null);
+          }
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [checkoutPriceId, showPaywall, clerkUserId]);
 
   const isBusy = isGenerating;
 
@@ -442,14 +572,6 @@ export default function CreatorWorkspace() {
       setPreviewingVoice(null);
     }
   }
-
-  const refreshProfile = useCallback(async () => {
-    const response = await fetch("/api/me", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Failed to load profile.");
-    setCredits(data.freeCreditsRemaining);
-    setIsPremium(Boolean(data.isPremium));
-  }, []);
 
   const refreshHistory = useCallback(async () => {
     const response = await fetch("/api/videos", { cache: "no-store" });
@@ -623,6 +745,7 @@ export default function CreatorWorkspace() {
       const data = await response.json();
 
       if (response.status === 403 && data.code === "PAYWALL_REQUIRED") {
+        setCheckoutPriceId(null);
         setShowPaywall(true);
         throw new Error(data.error || "Upgrade required.");
       }
@@ -684,6 +807,7 @@ export default function CreatorWorkspace() {
       const data = await response.json();
 
       if (response.status === 403 && data.code === "PAYWALL_REQUIRED") {
+        setCheckoutPriceId(null);
         setShowPaywall(true);
         throw new Error(data.error || "Upgrade required.");
       }
@@ -770,9 +894,6 @@ export default function CreatorWorkspace() {
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
           <div className="brand-glow text-lg font-semibold tracking-tight">
             Short Clips
-            <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
-              .ai
-            </span>
           </div>
 
           <div className="flex items-center gap-3 sm:gap-4">
@@ -783,7 +904,10 @@ export default function CreatorWorkspace() {
             <button
               type="button"
               className="hidden rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-3 py-1.5 text-xs font-semibold text-white sm:inline-flex"
-              onClick={() => setShowPaywall(true)}
+              onClick={() => {
+                setCheckoutPriceId(null);
+                setShowPaywall(true);
+              }}
             >
               Get credits
             </button>
@@ -1322,87 +1446,140 @@ export default function CreatorWorkspace() {
       </div>
 
       {showPaywall && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="glass-card w-full max-w-lg rounded-2xl p-6 text-center shadow-2xl">
-            <p className="text-sm font-medium text-indigo-300">Out of credits</p>
-            <h3 className="mt-2 text-2xl font-semibold text-white">
-              {isPremium
-                ? "Top up to keep generating"
-                : "Subscribe to keep generating"}
-            </h3>
-            <p className="mt-3 text-sm text-zinc-400">
-              {isPremium ? (
-                <>
-                  Add +{BILLING_PACKS.starter.credits} or +
-                  {BILLING_PACKS.creator.credits} credits anytime. Longer videos
-                  cost more (30s=2 · 45s=3 · 60s=4).
-                </>
-              ) : (
-                <>
-                  Starter ${BILLING_PACKS.starter.priceUsd}/mo ·{" "}
-                  {BILLING_PACKS.starter.credits} credits · Creator $
-                  {BILLING_PACKS.creator.priceUsd}/mo ·{" "}
-                  {BILLING_PACKS.creator.credits} credits. Longer videos cost more
-                  (30s=2 · 45s=3 · 60s=4). Top-ups unlock after you subscribe.
-                </>
-              )}
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/80 p-3 backdrop-blur-md sm:p-4">
+          <div
+            className={`glass-card relative z-[101] w-full max-h-[min(92vh,720px)] overflow-y-auto rounded-2xl border border-indigo-400/20 text-center shadow-[0_0_48px_rgba(99,102,241,0.18)] ${
+              checkoutPriceId
+                ? "max-w-lg px-4 py-4 sm:px-5 sm:py-5"
+                : "max-w-lg p-6"
+            }`}
+          >
+            {!checkoutPriceId ? (
+              <div className="mx-auto mb-4 h-1 w-16 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500" />
+            ) : null}
+            <p className="text-sm font-medium text-indigo-300">
+              {checkoutPriceId ? "Secure checkout" : "Out of credits"}
             </p>
-            <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              {!isPremium && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void startCheckout(paddlePrices.starterSub)}
-                    className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
-                  >
-                    Starter ${BILLING_PACKS.starter.priceUsd}/mo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void startCheckout(paddlePrices.creatorSub)}
-                    className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white"
-                  >
-                    Creator ${BILLING_PACKS.creator.priceUsd}/mo
-                  </button>
-                </>
-              )}
-              {isPremium && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void startCheckout(paddlePrices.starterTopup)}
-                    className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white"
-                  >
-                    Top up +{BILLING_PACKS.starter.credits} · $
-                    {BILLING_PACKS.starter.priceUsd}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void startCheckout(paddlePrices.creatorTopup)}
-                    className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white"
-                  >
-                    Top up +{BILLING_PACKS.creator.credits} · $
-                    {BILLING_PACKS.creator.priceUsd}
-                  </button>
-                </>
-              )}
-            </div>
+            <h3
+              className={`mt-1.5 font-semibold text-white ${
+                checkoutPriceId ? "text-xl" : "text-2xl"
+              }`}
+            >
+              {checkoutPriceId
+                ? "Complete payment"
+                : isPremium
+                  ? "Top up to keep generating"
+                  : "Subscribe to keep generating"}
+            </h3>
+            {!checkoutPriceId ? (
+              <p className="mt-3 text-sm text-zinc-400">
+                {isPremium ? (
+                  <>
+                    Add +{BILLING_PACKS.starter.credits} or +
+                    {BILLING_PACKS.creator.credits} credits anytime. Longer videos
+                    cost more (30s=2 · 45s=3 · 60s=4).
+                  </>
+                ) : (
+                  <>
+                    Starter ${BILLING_PACKS.starter.priceUsd}/mo ·{" "}
+                    {BILLING_PACKS.starter.credits} credits · Creator $
+                    {BILLING_PACKS.creator.priceUsd}/mo ·{" "}
+                    {BILLING_PACKS.creator.credits} credits. Longer videos cost more
+                    (30s=2 · 45s=3 · 60s=4). Top-ups unlock after you subscribe.
+                  </>
+                )}
+              </p>
+            ) : null}
+            {error ? (
+              <div
+                role="alert"
+                className="mt-3 rounded-xl border border-red-500/40 bg-red-500/15 px-3 py-2.5 text-left text-sm text-red-100"
+              >
+                {error}
+              </div>
+            ) : null}
+            {checkoutPriceId ? (
+              <div className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-zinc-950/90 p-1.5 sm:p-2">
+                <div className={PADDLE_FRAME_TARGET} />
+              </div>
+            ) : (
+              <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                {!isPremium && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => startCheckout(paddlePrices.starterSub)}
+                      className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white hover:brightness-110"
+                    >
+                      Starter ${BILLING_PACKS.starter.priceUsd}/mo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startCheckout(paddlePrices.creatorSub)}
+                      className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-500/20"
+                    >
+                      Creator ${BILLING_PACKS.creator.priceUsd}/mo
+                    </button>
+                  </>
+                )}
+                {isPremium && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => startCheckout(paddlePrices.starterTopup)}
+                      className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 text-sm font-semibold text-white hover:brightness-110"
+                    >
+                      Top up +{BILLING_PACKS.starter.credits} · $
+                      {BILLING_PACKS.starter.priceUsd}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startCheckout(paddlePrices.creatorTopup)}
+                      className="rounded-xl border border-indigo-400/40 bg-indigo-500/10 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-500/20"
+                    >
+                      Top up +{BILLING_PACKS.creator.credits} · $
+                      {BILLING_PACKS.creator.priceUsd}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             <button
               type="button"
-              onClick={() => setShowPaywall(false)}
-              className="mt-4 w-full rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200"
+              onClick={() => {
+                if (checkoutPriceId) {
+                  setCheckoutPriceId(null);
+                  void closePaddleCheckout();
+                  return;
+                }
+                dismissPaywall();
+              }}
+              className="mt-3 w-full rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-indigo-400/30 hover:bg-indigo-500/5"
             >
-              Not now
+              {checkoutPriceId ? "Back to plans" : "Not now"}
             </button>
-            <div className="mt-4 text-xs text-zinc-500">
-              Already paid? Refresh after checkout, or{" "}
-              <SignInButton mode="modal">
-                <button type="button" className="text-indigo-300 underline">
-                  refresh session
+            {!checkoutPriceId ? (
+              <div className="mt-4 text-xs text-zinc-500">
+                Already paid?{" "}
+                <button
+                  type="button"
+                  className="text-indigo-300 underline"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        await refreshProfile();
+                        dismissPaywall();
+                      } catch (err) {
+                        setError(err?.message || "Could not refresh credits.");
+                      }
+                    })();
+                  }}
+                >
+                  Refresh credits
                 </button>
-              </SignInButton>
-              .
-            </div>
+                .
+              </div>
+            ) : null}
           </div>
         </div>
       )}

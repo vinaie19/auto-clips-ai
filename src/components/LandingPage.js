@@ -27,7 +27,7 @@ export default function LandingPage() {
       <header className="relative z-10 border-b border-white/5">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <Link href="/" className="brand-glow text-lg font-semibold tracking-tight">
-            Short Clips<span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">.ai</span>
+            Short Clips
           </Link>
 
           <nav className="hidden items-center gap-8 text-sm text-zinc-300 md:flex">

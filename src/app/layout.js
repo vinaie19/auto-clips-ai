@@ -20,7 +20,30 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <ClerkProvider>
+    <ClerkProvider
+      appearance={{
+        variables: {
+          colorPrimary: "#6366f1",
+          colorBackground: "#09090b",
+          colorInputBackground: "#18181b",
+          colorInputText: "#ffffff",
+          colorText: "#ffffff",
+          colorTextSecondary: "#a1a1aa",
+          colorNeutral: "#27272a",
+          borderRadius: "0.75rem",
+        },
+        elements: {
+          card: "bg-zinc-950 border border-white/10 shadow-[0_0_40px_rgba(99,102,241,0.2)]",
+          headerTitle: "text-white",
+          headerSubtitle: "text-zinc-400",
+          socialButtonsBlockButton:
+            "border border-white/10 bg-zinc-900 text-white hover:bg-zinc-800",
+          formButtonPrimary:
+            "bg-gradient-to-r from-indigo-500 to-violet-500 hover:brightness-110",
+          footerActionLink: "text-indigo-300 hover:text-indigo-200",
+        },
+      }}
+    >
       <html
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} h-full dark antialiased`}

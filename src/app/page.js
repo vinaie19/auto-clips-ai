@@ -1,5 +1,6 @@
 import { Show } from "@clerk/nextjs";
 import CreatorWorkspace from "@/components/CreatorWorkspace";
+import FeedbackForm from "@/components/FeedbackForm";
 import LandingPage from "@/components/LandingPage";
 
 /**
@@ -16,6 +17,7 @@ export default function Home() {
       <Show when="signed-in">
         <CreatorWorkspace />
       </Show>
+      <FeedbackForm />
     </>
   );
 }

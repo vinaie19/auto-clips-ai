@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import CreatorWorkspace from "@/components/CreatorWorkspace";
+import CreatorWorkspace, {
+  checkoutSettlementGranted,
+} from "@/components/CreatorWorkspace";
 
 vi.mock("@clerk/nextjs", () => ({
   SignInButton: ({ children }) => children,
@@ -19,6 +21,26 @@ function mockApiResponses() {
     )
   );
 }
+
+describe("checkoutSettlementGranted", () => {
+  it("waits for credits to increase even when the user is already premium", () => {
+    expect(
+      checkoutSettlementGranted({ beforeCredits: 0, currentCredits: 0 })
+    ).toBe(false);
+    expect(
+      checkoutSettlementGranted({ beforeCredits: 0, currentCredits: 30 })
+    ).toBe(true);
+  });
+
+  it("does not treat an unloaded balance as a successful grant", () => {
+    expect(
+      checkoutSettlementGranted({ beforeCredits: null, currentCredits: 30 })
+    ).toBe(false);
+    expect(
+      checkoutSettlementGranted({ beforeCredits: undefined, currentCredits: 30 })
+    ).toBe(false);
+  });
+});
 
 describe("CreatorWorkspace", () => {
   beforeEach(() => {
