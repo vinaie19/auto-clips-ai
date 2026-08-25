@@ -11,7 +11,7 @@ import {
   computeSegmentDurations,
   splitScriptSentences,
 } from "@/lib/segment-durations";
-import { countUniqueBeatUrls } from "@/lib/pexels-broll";
+import { countUniqueBeatUrls, mapPool } from "@/lib/pexels-broll";
 
 describe("isVagueStockQuery / hardenStockQuery", () => {
   it("flags vague intensity / filler queries", () => {
@@ -168,5 +168,18 @@ describe("countUniqueBeatUrls", () => {
       ])
     ).toBe(2);
     expect(countUniqueBeatUrls([])).toBe(0);
+  });
+});
+
+describe("mapPool", () => {
+  it("runs with bounded concurrency and preserves order", async () => {
+    const started = [];
+    const result = await mapPool([10, 20, 30, 40], 2, async (n, i) => {
+      started.push(i);
+      await new Promise((r) => setTimeout(r, 5));
+      return n * 2;
+    });
+    expect(result).toEqual([20, 40, 60, 80]);
+    expect(started).toHaveLength(4);
   });
 });

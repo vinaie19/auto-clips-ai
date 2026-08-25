@@ -339,8 +339,98 @@ export async function pickUnusedClip({
 }
 
 /**
+ * Bounded parallel map (same idea as clip download pool).
+ * @template T, R
+ * @param {T[]} items
+ * @param {number} concurrency
+ * @param {(item: T, index: number) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
+export async function mapPool(items, concurrency, fn) {
+  const n = items.length;
+  const out = new Array(n);
+  let next = 0;
+  const workers = Math.max(1, Math.min(concurrency, n || 1));
+
+  async function worker() {
+    while (true) {
+      const i = next;
+      next += 1;
+      if (i >= n) return;
+      out[i] = await fn(items[i], i);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return out;
+}
+
+function brollConcurrency() {
+  return Math.max(
+    1,
+    Math.min(8, Number(process.env.BROLL_CONCURRENCY || 3) || 3)
+  );
+}
+
+/**
+ * Resolve one beat's preferred clip + alternate unused URLs (no shared usedUrls).
+ * Parallel-safe: collisions are resolved in a later serial claim pass.
+ */
+async function resolveBeatDraft(apiKey, query, line, motif, preferredOrientation) {
+  const lineFallback = line
+    ? line.split(/\s+/).slice(0, 5).join(" ").trim()
+    : "";
+  const privateUsed = new Set();
+
+  let preferred = await resolveVerifiedClip({
+    apiKey,
+    query,
+    line,
+    usedUrls: privateUsed,
+    preferredOrientation,
+  });
+
+  if (!preferred?.url && motif) {
+    preferred = await resolveVerifiedClip({
+      apiKey,
+      query: motif,
+      line: line || motif,
+      usedUrls: privateUsed,
+      preferredOrientation,
+    });
+  }
+
+  /** @type {string[]} */
+  const alternates = [];
+  const seen = new Set(preferred?.url ? [preferred.url] : []);
+  const searchQueries = [query, lineFallback, motif].filter(
+    (q, idx, arr) => q && arr.indexOf(q) === idx
+  );
+
+  for (const fq of searchQueries) {
+    const hits = await collectClipCandidates(
+      apiKey,
+      fq,
+      new Set(),
+      preferredOrientation,
+      MAX_FALLBACK_CANDIDATES
+    );
+    for (const hit of hits) {
+      if (!hit.url || seen.has(hit.url)) continue;
+      seen.add(hit.url);
+      alternates.push(hit.url);
+      if (alternates.length >= MAX_FALLBACK_CANDIDATES) break;
+    }
+    if (alternates.length >= MAX_FALLBACK_CANDIDATES) break;
+  }
+
+  return { preferred, alternates, lineFallback };
+}
+
+/**
  * Map line-bound visual beat queries → Pexels URLs (ordered).
- * Prefers unique URLs per beat — never reuses the previous beat's clip.
+ * Resolves beats in parallel (BROLL_CONCURRENCY, default 3), then claims
+ * unique URLs in order so cuts stay distinct.
  *
  * @param {string[]} queries
  * @param {{ weights?: number[], lines?: string[], motif?: string, orientation?: string }} [opts]
@@ -371,36 +461,59 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     throw new Error("No visual search queries generated.");
   }
 
-  const usedUrls = new Set();
-  const visualBeats = [];
+  const concurrency = brollConcurrency();
+  console.log(
+    JSON.stringify({
+      event: "broll_fetch_start",
+      count: cleaned.length,
+      concurrency,
+    })
+  );
 
-  for (let i = 0; i < cleaned.length; i++) {
-    const query = cleaned[i];
+  const drafts = await mapPool(cleaned, concurrency, async (query, i) => {
     const line =
       typeof lines[i] === "string" && lines[i].trim() ? lines[i].trim() : null;
-    const lineFallback = line
-      ? line.split(/\s+/).slice(0, 5).join(" ").trim()
-      : "";
-
-    let resolved = await resolveVerifiedClip({
+    const draft = await resolveBeatDraft(
       apiKey,
       query,
       line,
-      usedUrls,
-      preferredOrientation,
-    });
+      motif,
+      preferredOrientation
+    );
+    return { index: i, query, line, ...draft };
+  });
 
-    if (!resolved?.url && motif) {
-      resolved = await resolveVerifiedClip({
-        apiKey,
-        query: motif,
-        line: line || motif,
-        usedUrls,
-        preferredOrientation,
-      });
+  const usedUrls = new Set();
+  const visualBeats = [];
+
+  for (const draft of drafts) {
+    const { index: i, query, line, preferred, alternates, lineFallback } = draft;
+    let resolved = null;
+
+    if (preferred?.url && !usedUrls.has(preferred.url)) {
+      usedUrls.add(preferred.url);
+      resolved = preferred;
+    } else {
+      const altUrl = (alternates || []).find((u) => u && !usedUrls.has(u));
+      if (altUrl) {
+        usedUrls.add(altUrl);
+        resolved = {
+          url: altUrl,
+          query,
+          verified: false,
+          retried: true,
+        };
+        console.log(
+          JSON.stringify({
+            event: "clip_unique_alternate",
+            index: i,
+            query,
+            line: (line || "").slice(0, 80),
+          })
+        );
+      }
     }
 
-    // Unique unused clip only — never reuse the previous beat's URL.
     if (!resolved?.url) {
       const fallbackQueries = [query, lineFallback, motif].filter(
         (q, idx, arr) => q && arr.indexOf(q) === idx
@@ -467,6 +580,7 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       beats: visualBeats.length,
       unique_urls: uniqueCount,
       queries: cleaned.length,
+      concurrency,
     })
   );
 

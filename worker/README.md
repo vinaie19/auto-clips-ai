@@ -44,6 +44,7 @@ On ~1–2 GB hosts set `FFMPEG_LOW_MEM=1` to encode one clip at a time (avoids O
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | Service role |
 | `OPENAI_API_KEY` | yes (real render) | TTS + script + vision verify |
 | `PEXELS_API_KEY` | yes (real render) | B-roll search (prepare stage) |
+| `BROLL_CONCURRENCY` | no | Parallel Pexels/vision beats (default `3`, max `8`) |
 | `WORKER_ID` | yes | Unique per instance |
 | `LEASE_SECONDS` | no | Default 180; raise to 300 for long encodes |
 | `POLL_MS` | no | Default 3000 |
