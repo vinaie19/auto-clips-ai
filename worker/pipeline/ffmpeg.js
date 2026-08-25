@@ -1,11 +1,32 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 
-const FFPROBE = ffprobeStatic.path || ffprobeStatic;
-const FFMPEG = ffmpegPath;
+/**
+ * Prefer env → packaged static binary (if present) → system PATH.
+ * A1/ARM images often lack linux/arm64 binaries in *-static packages.
+ */
+function resolveBin(envKey, staticCandidate, fallbackName) {
+  const fromEnv = process.env[envKey];
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  if (typeof staticCandidate === "string" && staticCandidate && existsSync(staticCandidate)) {
+    return staticCandidate;
+  }
+  const which = spawnSync("which", [fallbackName], { encoding: "utf8" });
+  const pathOnDisk = which.status === 0 ? String(which.stdout || "").trim() : "";
+  if (pathOnDisk && existsSync(pathOnDisk)) return pathOnDisk;
+  return fallbackName;
+}
+
+const FFPROBE = resolveBin(
+  "FFPROBE_PATH",
+  ffprobeStatic?.path || ffprobeStatic,
+  "ffprobe"
+);
+const FFMPEG = resolveBin("FFMPEG_PATH", ffmpegPath, "ffmpeg");
 
 /** Cap decode/encode parallelism for small Lightsail boxes (~1–2 GB). */
 const THREAD_ARGS = ["-threads", "1", "-filter_threads", "1"];
