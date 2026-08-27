@@ -15,6 +15,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "@aws-sdk/client-s3": fileURLToPath(
+        new URL("./__tests__/mocks/client-s3.js", import.meta.url)
+      ),
     },
   },
   test: {
