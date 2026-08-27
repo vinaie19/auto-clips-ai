@@ -8,6 +8,8 @@ import {
   MAX_STYLE_RETRIES,
   MAX_VISION_CALLS_PER_RENDER,
   MIN_VISUAL_BEATS,
+  KEEP_BEST_MIN_SCORE,
+  isPlausibleStockQuery,
   fetchBrollForQueries,
 } from "@/lib/pexels-broll";
 import { searchCandidates } from "@/lib/broll-providers";
@@ -171,6 +173,18 @@ describe("style budgets", () => {
     expect(MAX_STYLE_RETRIES).toBe(2);
     expect(MAX_VISION_CALLS_PER_RENDER).toBe(30);
     expect(MIN_VISUAL_BEATS).toBe(4);
+    expect(KEEP_BEST_MIN_SCORE).toBe(0.35);
+  });
+});
+
+describe("isPlausibleStockQuery", () => {
+  it("accepts concrete stock phrases and rejects narration fragments", () => {
+    expect(isPlausibleStockQuery("elephant walking savannah")).toBe(true);
+    expect(isPlausibleStockQuery("close up elephant trunk")).toBe(true);
+    expect(isPlausibleStockQuery("So, next time you see")).toBe(false);
+    expect(isPlausibleStockQuery("You might wonder about their")).toBe(false);
+    expect(isPlausibleStockQuery("Because he wanted to pack")).toBe(false);
+    expect(isPlausibleStockQuery("")).toBe(false);
   });
 });
 
@@ -211,7 +225,6 @@ describe("fetchBrollForQueries seam (D11)", () => {
     const fetchMock = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes("pixabay.com")) {
-        expect(url).toContain("video_type=animation");
         expect(url).not.toContain("orientation=portrait");
         return {
           ok: true,
@@ -263,6 +276,10 @@ describe("fetchBrollForQueries seam (D11)", () => {
         typeof result.styleAcceptanceRate === "number"
     ).toBe(true);
 
+    const pixabayAnim = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("video_type=animation")
+    );
+    expect(pixabayAnim.length).toBeGreaterThan(0);
     const firstUrl = String(fetchMock.mock.calls[0][0]);
     expect(firstUrl).toContain("pixabay.com");
   });
@@ -323,5 +340,70 @@ describe("fetchBrollForQueries seam (D11)", () => {
     await searchCandidates("coffee", { orientation: "portrait" }, "pixabay");
     expect(calls).toBe(1);
     expect(SEARCH_CACHE_TTL_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("fills failed line searches from the motif bank (theme continuity)", async () => {
+    let motifHit = 0;
+    vi.stubGlobal("fetch", async (input) => {
+      const url = String(input);
+      const isMotif =
+        url.includes("elephants") ||
+        decodeURIComponent(url).includes("elephants");
+      if (url.includes("pixabay.com")) {
+        // Line queries on Pixabay: empty (forces miss for 3d animation path)
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "X-RateLimit-Remaining": "90" }),
+          json: async () => ({ hits: [] }),
+        };
+      }
+      // Pexels: only motif searches return clips
+      if (isMotif) {
+        motifHit += 1;
+        const id = motifHit;
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "X-Ratelimit-Remaining": "90" }),
+          json: async () => ({
+            videos: [
+              mockPexelsHit(id, `https://cdn.pexels.com/elephant-${id}.mp4`),
+              mockPexelsHit(
+                id + 50,
+                `https://cdn.pexels.com/elephant-${id + 50}.mp4`
+              ),
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "X-Ratelimit-Remaining": "90" }),
+        json: async () => ({ videos: [] }),
+      };
+    });
+
+    const result = await fetchBrollForQueries(
+      [
+        "suitcase party abstract xyz",
+        "scale weighing nonsense abc",
+        "social structure icons qwe",
+        "snow trees winter rty",
+      ],
+      {
+        visualStyle: "3d animation",
+        motif: "elephants walking savannah",
+        orientation: "portrait",
+      }
+    );
+
+    expect(result.visualBeats.length).toBeGreaterThanOrEqual(MIN_VISUAL_BEATS);
+    expect(
+      result.visualBeats.every((b) => b.url.includes("elephant"))
+    ).toBe(true);
+    expect(result.visualBeats.some((b) => b.fromMotifBank === true)).toBe(true);
+    expect(result.styleDegraded).toBe(true);
   });
 });
