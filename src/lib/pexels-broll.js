@@ -10,11 +10,11 @@ const PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/v1/videos/search";
 export const MAX_VISUAL_BEATS = 15;
 export const MIN_VISUAL_BEATS = 4;
 /** Pexels hits to try per search query before a betterQuery round. */
-export const MAX_VERIFY_CANDIDATES = 5;
-/** Max vision API calls per beat (keep generate fast). */
-export const MAX_VISION_ATTEMPTS = 2;
-/** Max distinct Pexels search queries per beat (initial + one betterQuery). */
-export const MAX_QUERY_ROUNDS = 2;
+export const MAX_VERIFY_CANDIDATES = 6;
+/** Max vision API calls per beat. */
+export const MAX_VISION_ATTEMPTS = 3;
+/** Max distinct Pexels search queries per beat (initial + betterQuery rounds). */
+export const MAX_QUERY_ROUNDS = 3;
 /** Extra unused clips to grab when vision path finds nothing (no reuse of prior beat). */
 export const MAX_FALLBACK_CANDIDATES = 8;
 
