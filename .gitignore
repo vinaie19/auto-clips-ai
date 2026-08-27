@@ -47,3 +47,5 @@ next-env.d.ts
 opencode.json
 
 .temp
+# git worktrees (local isolation)
+.worktrees/
