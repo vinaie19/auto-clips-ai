@@ -66,6 +66,7 @@ function formatStatus(status, progress) {
   if (!status) return "Unknown";
   if (status === "done") return "Ready";
   if (status === "failed") return "Failed";
+  if (status === "expired") return "Expired";
   if (progress === "preparing") return "Preparing";
   if (progress === "rendering") return "Rendering";
   if (status === "running" || status === "claimed") {
