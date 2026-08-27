@@ -9,8 +9,10 @@ import {
   MAX_VISION_CALLS_PER_RENDER,
   MIN_VISUAL_BEATS,
   KEEP_BEST_MIN_SCORE,
+  MAX_ALTERNATE_VERIFY,
   isPlausibleStockQuery,
   fetchBrollForQueries,
+  resolveVerifiedClip,
 } from "@/lib/pexels-broll";
 import { searchCandidates } from "@/lib/broll-providers";
 import {
@@ -140,7 +142,7 @@ describe("styleMatch verdict (D6)", () => {
     expect(v.match).toBe(true);
     expect(v.styleMatch).toBe(false);
     expect(v.styleScore).toBe(0.2);
-    expect(STYLE_MATCH_THRESHOLD).toBe(0.4);
+    expect(STYLE_MATCH_THRESHOLD).toBe(0.5);
   });
 
   it("returns null style fields when style was not requested", () => {
@@ -156,15 +158,22 @@ describe("styleMatch verdict (D6)", () => {
 });
 
 describe("hardenStockQuery style vocab (T5)", () => {
-  it("appends style vocab for vague queries when style is set", () => {
+  it("prefixes style vocab for vague queries when style is set", () => {
     const q = hardenStockQuery("intensity", "the dog runs fast", "pets", "cartoon");
-    expect(q.toLowerCase()).toMatch(/cartoon|dog|runs/);
+    expect(q.toLowerCase()).toMatch(/^cartoon/);
+    expect(q.toLowerCase()).toMatch(/dog|runs/);
   });
 
-  it("leaves concrete queries alone when style is set", () => {
+  it("prefixes style vocab for concrete queries when style is set", () => {
     expect(
       hardenStockQuery("close up coffee pour", "pour the coffee", "coffee", "cartoon")
-    ).toBe("close up coffee pour");
+    ).toBe("cartoon close up coffee pour");
+  });
+
+  it("skips duplicate style terms already in the query", () => {
+    expect(
+      hardenStockQuery("cartoon dog running", "the dog runs", "pets", "cartoon")
+    ).toBe("cartoon dog running");
   });
 });
 
@@ -174,6 +183,7 @@ describe("style budgets", () => {
     expect(MAX_VISION_CALLS_PER_RENDER).toBe(30);
     expect(MIN_VISUAL_BEATS).toBe(4);
     expect(KEEP_BEST_MIN_SCORE).toBe(0.35);
+    expect(MAX_ALTERNATE_VERIFY).toBe(3);
   });
 });
 
@@ -405,5 +415,119 @@ describe("fetchBrollForQueries seam (D11)", () => {
     ).toBe(true);
     expect(result.visualBeats.some((b) => b.fromMotifBank === true)).toBe(true);
     expect(result.styleDegraded).toBe(true);
+  });
+
+  it("strict tier alternates search Pixabay animation with visualStyle", async () => {
+    const fetchMock = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("pixabay.com")) {
+        expect(url).toContain("video_type=animation");
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "X-RateLimit-Remaining": "90" }),
+          json: async () => ({
+            hits: [
+              mockPixabayHit(10, "https://cdn.pixabay.com/alt1.mp4"),
+              mockPixabayHit(11, "https://cdn.pixabay.com/alt2.mp4"),
+              mockPixabayHit(12, "https://cdn.pixabay.com/alt3.mp4"),
+              mockPixabayHit(13, "https://cdn.pixabay.com/alt4.mp4"),
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "X-Ratelimit-Remaining": "90" }),
+        json: async () => ({ videos: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchBrollForQueries(
+      [
+        "cartoon dog running",
+        "cartoon cat jump",
+        "cartoon bird fly",
+        "cartoon fish swim",
+      ],
+      { visualStyle: "cartoon", orientation: "portrait" }
+    );
+
+    expect(result.visualBeats.length).toBeGreaterThanOrEqual(MIN_VISUAL_BEATS);
+    const pixabayCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("pixabay.com")
+    );
+    expect(pixabayCalls.length).toBeGreaterThan(0);
+    expect(
+      pixabayCalls.every((c) => String(c[0]).includes("video_type=animation"))
+    ).toBe(true);
+  });
+});
+
+describe("resolveVerifiedClip strict tier (D6)", () => {
+  beforeEach(() => {
+    process.env.PEXELS_API_KEY = "test-pexels";
+    process.env.PIXABAY_API_KEY = "test-pixabay";
+    process.env.OPENAI_API_KEY = "test-openai";
+    delete process.env.CLIP_VERIFY;
+    clearProviderSearchCache();
+  });
+
+  it("does not keep bestRejected when strict tier and styleMatch is false", async () => {
+    vi.stubGlobal("fetch", async (input) => {
+      const url = String(input);
+      if (url.includes("openai.com")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    match: true,
+                    score: 0.85,
+                    styleScore: 0.2,
+                    reason: "live action not cartoon",
+                    betterQuery: null,
+                  }),
+                },
+              },
+            ],
+          }),
+        };
+      }
+      if (url.includes("pixabay.com")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "X-RateLimit-Remaining": "90" }),
+          json: async () => ({
+            hits: [mockPixabayHit(1, "https://cdn.pixabay.com/offstyle.mp4")],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "X-Ratelimit-Remaining": "90" }),
+        json: async () => ({ videos: [] }),
+      };
+    });
+
+    const usedUrls = new Set();
+    const result = await resolveVerifiedClip({
+      query: "cartoon dog running",
+      line: "the dog runs fast",
+      usedUrls,
+      preferredOrientation: "portrait",
+      visualStyle: "cartoon",
+      visionBudget: { calls: 0 },
+    });
+
+    expect(result).toBeNull();
+    expect(usedUrls.size).toBe(0);
   });
 });

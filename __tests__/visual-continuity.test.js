@@ -4,6 +4,7 @@ import {
   beatLinesFromScript,
   isVagueStockQuery,
   hardenStockQuery,
+  injectStyleIntoQuery,
   MIN_SHOTS,
   MAX_SHOTS,
 } from "@/lib/visual-queries";
@@ -30,6 +31,37 @@ describe("isVagueStockQuery / hardenStockQuery", () => {
     );
     expect(isVagueStockQuery(q)).toBe(false);
     expect(q.toLowerCase()).toMatch(/push/);
+  });
+
+  it("prefixes style vocab when query lacks style terms", () => {
+    expect(injectStyleIntoQuery("scarecrow in a field", "cartoon")).toBe(
+      "cartoon scarecrow in a field"
+    );
+    expect(injectStyleIntoQuery("scarecrow in a field", "3d animation")).toBe(
+      "3d animation scarecrow in a field"
+    );
+    expect(injectStyleIntoQuery("cartoon scarecrow field", "cartoon")).toBe(
+      "cartoon scarecrow field"
+    );
+  });
+
+  it("caps injected queries at a reasonable word length", () => {
+    const q = injectStyleIntoQuery(
+      "one two three four five six seven eight nine",
+      "cartoon",
+      { maxWords: 6 }
+    );
+    expect(q.split(/\s+/).length).toBeLessThanOrEqual(6);
+    expect(q.toLowerCase()).toMatch(/^cartoon/);
+  });
+
+  it("hardenStockQuery always injects style when set", () => {
+    expect(
+      hardenStockQuery("scarecrow in a field", "the scarecrow stood", "farm", "cartoon")
+    ).toBe("cartoon scarecrow in a field");
+    expect(
+      hardenStockQuery("close up coffee pour", "pour the coffee", "coffee", "cartoon")
+    ).toBe("cartoon close up coffee pour");
   });
 });
 

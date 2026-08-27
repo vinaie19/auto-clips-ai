@@ -7,7 +7,7 @@ export const CLIP_VERIFY_MODEL = "gpt-4o-mini";
 export const CLIP_MATCH_THRESHOLD = 0.6;
 
 /** Minimum styleScore (0–1) for strict visual-style tiers. */
-export const STYLE_MATCH_THRESHOLD = 0.4;
+export const STYLE_MATCH_THRESHOLD = 0.5;
 
 const STYLE_LOOK = {
   cartoon: "flat 2D cartoon illustration, not live action",

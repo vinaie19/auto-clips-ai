@@ -22,7 +22,9 @@ describe("visual style ids", () => {
       "vintage",
     ]);
     expect(VISUAL_STYLES).toHaveLength(10);
-    expect(VISUAL_STYLES.every((s) => s.id && s.label && s.blurb)).toBe(true);
+    expect(
+      VISUAL_STYLES.every((s) => s.id && s.label && s.blurb && s.previewSrc)
+    ).toBe(true);
   });
 
   it("resolveVisualStyle normalizes casing, omits Auto, rejects unknown", () => {

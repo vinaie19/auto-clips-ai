@@ -37,8 +37,18 @@ const VIDEO_TONE_OPTIONS = Object.entries(VIDEO_TONES).map(([id, tone]) => ({
 }));
 
 const VIDEO_STYLE_OPTIONS = [
-  { id: "auto", label: "Auto", blurb: "Auto — match the look to your topic automatically." },
-  ...VISUAL_STYLES.map(({ id, label, blurb }) => ({ id, label, blurb })),
+  {
+    id: "auto",
+    label: "Auto",
+    blurb: "Auto — match the look to your topic automatically.",
+    previewSrc: "/styles/auto.jpg?v=2",
+  },
+  ...VISUAL_STYLES.map(({ id, label, blurb, previewSrc }) => ({
+    id,
+    label,
+    blurb,
+    previewSrc,
+  })),
 ];
 
 const DURATION_OPTIONS = Object.values(VIDEO_DURATIONS).map((d) => ({
@@ -143,6 +153,136 @@ function CaptionSample({ theme, compact = false }) {
   );
 }
 
+function StylePreview({ option, size = "panel" }) {
+  if (!option?.previewSrc) return null;
+
+  const sizeClass =
+    size === "trigger"
+      ? "h-9 w-[22px] shrink-0 rounded-md"
+      : size === "mobile"
+        ? "mx-auto aspect-[9/16] w-full max-w-[140px] rounded-xl"
+        : "aspect-[9/16] w-full rounded-xl";
+
+  return (
+    <div
+      className={`relative overflow-hidden bg-zinc-900 ring-1 ring-white/10 ${sizeClass}`}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={option.previewSrc}
+        alt=""
+        aria-hidden
+        className="absolute inset-0 h-full w-full object-cover"
+      />
+      {size !== "trigger" ? (
+        <div
+          className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent"
+          aria-hidden
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function StyleHoverPanel({ label, value, options, preview, onChange, onHover, onClose }) {
+  return (
+    <div className="absolute left-0 right-0 z-50 mt-2 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl shadow-black/50">
+      <div className="flex h-[min(420px,58vh)]">
+        <ul
+          role="listbox"
+          aria-label={label || "Visual styles"}
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain border-b border-white/5 sm:border-b-0 sm:border-r sm:border-white/5"
+        >
+          {options.map((option) => {
+            const active = option.id === value;
+            const hovered = option.id === preview?.id;
+            return (
+              <li key={option.id}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onMouseEnter={() => onHover(option.id)}
+                  onFocus={() => onHover(option.id)}
+                  onClick={() => {
+                    onChange(option.id);
+                    onClose();
+                  }}
+                  className={`flex w-full items-center gap-3 border-l-2 px-4 py-3 text-left text-sm transition ${
+                    active
+                      ? "border-indigo-400 bg-indigo-500/10 text-white"
+                      : hovered
+                        ? "border-indigo-400/50 bg-white/[0.04] text-white"
+                        : "border-transparent text-zinc-300 hover:bg-white/[0.03]"
+                  }`}
+                >
+                  <span className="min-w-0 flex-1 font-medium">
+                    {option.label || option.id || "Auto"}
+                  </span>
+                  {active ? (
+                    <svg
+                      viewBox="0 0 20 20"
+                      className="h-4 w-4 shrink-0 text-indigo-300"
+                      fill="currentColor"
+                      aria-hidden
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  ) : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+
+        <div className="hidden w-[172px] shrink-0 flex-col justify-start p-3 sm:flex">
+          {preview ? (
+            <>
+              <div className="relative mx-auto aspect-[9/16] w-full max-w-[148px] overflow-hidden rounded-xl ring-1 ring-white/10">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={preview.previewSrc}
+                  alt=""
+                  aria-hidden
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
+                <div
+                  className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent"
+                  aria-hidden
+                />
+              </div>
+              <p className="mt-3 text-xs font-semibold text-white">
+                {preview.label || preview.id}
+              </p>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-400">
+                {preview.blurb}
+              </p>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="border-t border-white/5 p-4 sm:hidden">
+        {preview ? (
+          <>
+            <StylePreview option={preview} size="mobile" />
+            <p className="mt-3 text-center text-xs font-semibold text-white">
+              {preview.label || preview.id}
+            </p>
+            <p className="mt-1.5 text-center text-[11px] leading-relaxed text-zinc-400">
+              {preview.blurb}
+            </p>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Custom dropdown with hover preview panel (captions) or description (tones).
  */
@@ -153,7 +293,7 @@ function HoverSelect({
   options,
   disabled,
   onChange,
-  variant = "caption", // caption | tone
+  variant = "caption", // caption | tone | style
 }) {
   const [open, setOpen] = useState(false);
   const [hoveredId, setHoveredId] = useState(value);
@@ -202,6 +342,8 @@ function HoverSelect({
             className="h-3 w-3 shrink-0 rounded-full ring-1 ring-white/25"
             style={{ backgroundColor: selected.color }}
           />
+        ) : variant === "style" && selected?.previewSrc ? (
+          <StylePreview option={selected} size="trigger" />
         ) : null}
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
           {selected?.label || selected?.id || "Auto"}
@@ -209,103 +351,113 @@ function HoverSelect({
         <span className="text-xs text-zinc-500">{open ? "▴" : "▾"}</span>
       </button>
 
-      {open && (
-        <div className="absolute left-0 right-0 z-50 mt-2 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl shadow-black/50">
-          <div className="grid sm:grid-cols-[1fr_minmax(140px,180px)]">
-            <ul
-              role="listbox"
-              aria-label={label || "Options"}
-              className="max-h-64 overflow-y-auto border-b border-white/5 sm:border-b-0 sm:border-r"
-            >
-              {options.map((option) => {
-                const active = option.id === value;
-                const hovered = option.id === hoveredId;
-                return (
-                  <li key={option.id}>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={active}
-                      onMouseEnter={() => setHoveredId(option.id)}
-                      onFocus={() => setHoveredId(option.id)}
-                      onClick={() => {
-                        onChange(option.id);
-                        setOpen(false);
-                      }}
-                      className={`flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm transition ${
-                        hovered || active
-                          ? "bg-indigo-500/15 text-white"
-                          : "text-zinc-300 hover:bg-white/5"
-                      }`}
-                    >
-                      {variant === "caption" && option.color ? (
-                        <span
-                          className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-white/20"
-                          style={{ backgroundColor: option.color }}
-                        />
-                      ) : null}
-                      <span className="font-medium">
-                        {option.label || option.id || "Auto"}
-                      </span>
-                      {active ? (
-                        <span className="ml-auto text-[10px] text-indigo-300">
-                          Selected
+      {open &&
+        (variant === "style" ? (
+          <StyleHoverPanel
+            label={label}
+            value={value}
+            options={options}
+            preview={preview}
+            onChange={onChange}
+            onHover={setHoveredId}
+            onClose={() => setOpen(false)}
+          />
+        ) : (
+          <div className="absolute left-0 right-0 z-50 mt-2 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl shadow-black/50">
+            <div className="grid sm:grid-cols-[1fr_minmax(140px,180px)]">
+              <ul
+                role="listbox"
+                aria-label={label || "Options"}
+                className="max-h-64 overflow-y-auto border-b border-white/5 sm:border-b-0 sm:border-r"
+              >
+                {options.map((option) => {
+                  const active = option.id === value;
+                  const hovered = option.id === hoveredId;
+                  return (
+                    <li key={option.id}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        onMouseEnter={() => setHoveredId(option.id)}
+                        onFocus={() => setHoveredId(option.id)}
+                        onClick={() => {
+                          onChange(option.id);
+                          setOpen(false);
+                        }}
+                        className={`flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm transition ${
+                          hovered || active
+                            ? "bg-indigo-500/15 text-white"
+                            : "text-zinc-300 hover:bg-white/5"
+                        }`}
+                      >
+                        {variant === "caption" && option.color ? (
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-white/20"
+                            style={{ backgroundColor: option.color }}
+                          />
+                        ) : null}
+                        <span className="font-medium">
+                          {option.label || option.id || "Auto"}
                         </span>
-                      ) : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+                        {active ? (
+                          <span className="ml-auto text-[10px] text-indigo-300">
+                            Selected
+                          </span>
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
 
-            <div className="hidden bg-zinc-900/80 p-3 sm:block">
+              <div className="hidden bg-zinc-900/80 p-3 sm:block">
+                {variant === "caption" && preview ? (
+                  <>
+                    <CaptionSample theme={preview} compact />
+                    <div className="mt-2 flex items-center justify-center gap-2">
+                      <span
+                        className="h-2.5 w-2.5 rounded-full ring-1 ring-white/20"
+                        style={{ backgroundColor: preview.color }}
+                      />
+                      <span
+                        className="h-2.5 w-2.5 rounded-full ring-1 ring-white/20"
+                        style={{ backgroundColor: preview.stroke }}
+                      />
+                    </div>
+                    <p className="mt-2 text-[11px] leading-snug text-zinc-400">
+                      {preview.blurb}
+                    </p>
+                  </>
+                ) : preview ? (
+                  <>
+                    <p className="text-xs font-semibold text-violet-200">
+                      {preview.id}
+                    </p>
+                    <p className="mt-2 text-[11px] leading-snug text-zinc-300">
+                      {preview.blurb}
+                    </p>
+                  </>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="border-t border-white/5 p-3 sm:hidden">
               {variant === "caption" && preview ? (
                 <>
                   <CaptionSample theme={preview} compact />
-                  <div className="mt-2 flex items-center justify-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full ring-1 ring-white/20"
-                      style={{ backgroundColor: preview.color }}
-                    />
-                    <span
-                      className="h-2.5 w-2.5 rounded-full ring-1 ring-white/20"
-                      style={{ backgroundColor: preview.stroke }}
-                    />
-                  </div>
                   <p className="mt-2 text-[11px] leading-snug text-zinc-400">
                     {preview.blurb}
                   </p>
                 </>
               ) : preview ? (
-                <>
-                  <p className="text-xs font-semibold text-violet-200">
-                    {preview.id}
-                  </p>
-                  <p className="mt-2 text-[11px] leading-snug text-zinc-300">
-                    {preview.blurb}
-                  </p>
-                </>
+                <p className="text-[11px] leading-snug text-zinc-300">
+                  {preview.blurb}
+                </p>
               ) : null}
             </div>
           </div>
-
-          {/* Mobile: show preview under list for hovered/selected */}
-          <div className="border-t border-white/5 p-3 sm:hidden">
-            {variant === "caption" && preview ? (
-              <>
-                <CaptionSample theme={preview} compact />
-                <p className="mt-2 text-[11px] leading-snug text-zinc-400">
-                  {preview.blurb}
-                </p>
-              </>
-            ) : preview ? (
-              <p className="text-[11px] leading-snug text-zinc-300">
-                {preview.blurb}
-              </p>
-            ) : null}
-          </div>
-        </div>
-      )}
+        ))}
     </div>
   );
 }
@@ -362,6 +514,9 @@ export default function CreatorWorkspace() {
   const [credits, setCredits] = useState(null);
   const [isPremium, setIsPremium] = useState(false);
   const [history, setHistory] = useState([]);
+  const [historyNextCursor, setHistoryNextCursor] = useState(null);
+  const [historyTotalCount, setHistoryTotalCount] = useState(null);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   /** @type {"generate" | "videos"} */
   const [nav, setNav] = useState("generate");
   const [selectedVideoId, setSelectedVideoId] = useState(null);
@@ -595,12 +750,42 @@ export default function CreatorWorkspace() {
     }
   }
 
+  const applyHistoryPage = useCallback((data, { append = false } = {}) => {
+    setHistory((prev) =>
+      append ? [...prev, ...(data.videos || [])] : data.videos || []
+    );
+    setHistoryNextCursor(data.nextCursor ?? null);
+    if (!append && typeof data.totalCount === "number") {
+      setHistoryTotalCount(data.totalCount);
+    }
+  }, []);
+
   const refreshHistory = useCallback(async () => {
     const response = await fetch("/api/videos", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Failed to load history.");
-    setHistory(data.videos || []);
-  }, []);
+    applyHistoryPage(data);
+  }, [applyHistoryPage]);
+
+  const loadMoreHistory = useCallback(async () => {
+    if (!historyNextCursor || historyLoadingMore) return;
+    setHistoryLoadingMore(true);
+    try {
+      const response = await fetch(
+        `/api/videos?cursor=${encodeURIComponent(historyNextCursor)}`,
+        { cache: "no-store" }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to load more videos.");
+      }
+      applyHistoryPage(data, { append: true });
+    } catch (err) {
+      setError(err.message || "Failed to load more videos.");
+    } finally {
+      setHistoryLoadingMore(false);
+    }
+  }, [applyHistoryPage, historyLoadingMore, historyNextCursor]);
 
   useEffect(() => {
     let alive = true;
@@ -620,7 +805,7 @@ export default function CreatorWorkspace() {
           setIsPremium(Boolean(meData.isPremium));
         }
         if (historyRes.ok) {
-          setHistory(historyData.videos || []);
+          applyHistoryPage(historyData);
         }
       } catch (err) {
         console.error(err);
@@ -631,7 +816,7 @@ export default function CreatorWorkspace() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [applyHistoryPage]);
 
   function goGenerate() {
     setNav("generate");
@@ -657,7 +842,13 @@ export default function CreatorWorkspace() {
 
   function upsertHistoryItem(item) {
     setHistory((prev) => {
+      const existed = prev.some((v) => v.id === item.id);
       const rest = prev.filter((v) => v.id !== item.id);
+      if (!existed) {
+        setHistoryTotalCount((count) =>
+          typeof count === "number" ? count + 1 : count
+        );
+      }
       return [item, ...rest];
     });
   }
@@ -964,9 +1155,10 @@ export default function CreatorWorkspace() {
                 >
                   <NavIcon name={item.id} />
                   {item.label}
-                  {item.id === "videos" && history.length > 0 ? (
+                  {item.id === "videos" &&
+                  (historyTotalCount ?? history.length) > 0 ? (
                     <span className="ml-auto hidden rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-medium text-zinc-300 lg:inline">
-                      {history.length}
+                      {historyTotalCount ?? history.length}
                     </span>
                   ) : null}
                 </button>
@@ -1086,13 +1278,23 @@ export default function CreatorWorkspace() {
               <section className="relative z-20 glass-card rounded-2xl p-5 sm:p-6">
                 <HoverSelect
                   label="Visual style"
-                  hint="Pick the footage look. Leave on Auto to match the topic."
+                  hint="Hover a style to preview sample footage."
                   value={visualStyle}
                   options={VIDEO_STYLE_OPTIONS}
                   disabled={isBusy}
-                  variant="tone"
+                  variant="style"
                   onChange={(next) => setVisualStyle(next)}
                 />
+                {visualStyle === "motion graphics" &&
+                /\b(joke|jokes|funny|comedy|pun|humor|humour|laugh|story|stories)\b/i.test(
+                  topic
+                ) ? (
+                  <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-snug text-amber-100">
+                    Motion graphics works best for facts and explainers. Joke or
+                    story topics may use kinetic text instead of literal scenes —
+                    results can vary.
+                  </p>
+                ) : null}
               </section>
 
               <section className="relative z-10 glass-card rounded-2xl p-5 sm:p-6">
@@ -1234,69 +1436,88 @@ export default function CreatorWorkspace() {
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
-                  {history.map((item) => {
-                    const itemBusy =
-                      watchingBusy && selectedVideoId === item.id;
-                    return (
+                <>
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+                    {history.map((item) => {
+                      const itemBusy =
+                        watchingBusy && selectedVideoId === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => openVideo(item.id)}
+                          className="group glass-card overflow-hidden rounded-2xl text-left transition hover:ring-2 hover:ring-indigo-400/40"
+                        >
+                          <div
+                            className={`relative bg-zinc-900 ${
+                              item.aspectRatio === "16:9"
+                                ? "aspect-video"
+                                : item.aspectRatio === "1:1"
+                                  ? "aspect-square"
+                                  : "aspect-[9/16]"
+                            }`}
+                          >
+                            {item.thumbnail_url ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={item.thumbnail_url}
+                                alt=""
+                                className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+                              />
+                            ) : item.video_url ? (
+                              <video
+                                src={item.video_url}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center">
+                                {(item.status === "pending" ||
+                                  item.status === "claimed" ||
+                                  item.status === "running" ||
+                                  itemBusy) && (
+                                  <span className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-300" />
+                                )}
+                                <span className="text-xs font-medium text-zinc-400">
+                                  {formatStatus(item.status, item.progress)}
+                                </span>
+                              </div>
+                            )}
+                            <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-100 backdrop-blur">
+                              {formatStatus(item.status, item.progress)}
+                            </span>
+                          </div>
+                          <div className="space-y-1 p-3">
+                            <p className="line-clamp-2 text-sm font-medium text-zinc-100">
+                              {item.prompt || "Untitled"}
+                            </p>
+                            <p className="text-[11px] text-zinc-500">
+                              {formatDate(item.created_at)}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {historyNextCursor ? (
+                    <div className="flex justify-center pt-2">
                       <button
-                        key={item.id}
                         type="button"
-                        onClick={() => openVideo(item.id)}
-                        className="group glass-card overflow-hidden rounded-2xl text-left transition hover:ring-2 hover:ring-indigo-400/40"
+                        onClick={() => void loadMoreHistory()}
+                        disabled={historyLoadingMore}
+                        className="rounded-xl border border-white/10 px-5 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-white/20 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        <div
-                          className={`relative bg-zinc-900 ${
-                            item.aspectRatio === "16:9"
-                              ? "aspect-video"
-                              : item.aspectRatio === "1:1"
-                                ? "aspect-square"
-                                : "aspect-[9/16]"
-                          }`}
-                        >                          {item.thumbnail_url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={item.thumbnail_url}
-                              alt=""
-                              className="h-full w-full object-cover transition group-hover:scale-[1.02]"
-                            />
-                          ) : item.video_url ? (
-                            <video
-                              src={item.video_url}
-                              muted
-                              playsInline
-                              preload="metadata"
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center">
-                              {(item.status === "pending" ||
-                                item.status === "claimed" ||
-                                item.status === "running" ||
-                                itemBusy) && (
-                                <span className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-300" />
-                              )}
-                              <span className="text-xs font-medium text-zinc-400">
-                                {formatStatus(item.status, item.progress)}
-                              </span>
-                            </div>
-                          )}
-                          <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-100 backdrop-blur">
-                            {formatStatus(item.status, item.progress)}
-                          </span>
-                        </div>
-                        <div className="space-y-1 p-3">
-                          <p className="line-clamp-2 text-sm font-medium text-zinc-100">
-                            {item.prompt || "Untitled"}
-                          </p>
-                          <p className="text-[11px] text-zinc-500">
-                            {formatDate(item.created_at)}
-                          </p>
-                        </div>
+                        {historyLoadingMore ? "Loading…" : "Load more"}
                       </button>
-                    );
-                  })}
-                </div>
+                    </div>
+                  ) : history.length > 24 ? (
+                    <p className="pt-2 text-center text-xs text-zinc-500">
+                      All videos loaded
+                    </p>
+                  ) : null}
+                </>
               )}
             </div>
           )}
@@ -1425,6 +1646,14 @@ export default function CreatorWorkspace() {
                         {selectedVideo.tone || "—"}
                       </dd>
                     </div>
+                    {selectedVideo.visualStyle ? (
+                      <div>
+                        <dt className="text-xs text-zinc-500">Visual style</dt>
+                        <dd className="mt-0.5 font-medium text-zinc-100">
+                          {selectedVideo.visualStyle}
+                        </dd>
+                      </div>
+                    ) : null}
                     <div>
                       <dt className="text-xs text-zinc-500">Subtitles</dt>
                       <dd className="mt-0.5 font-medium text-zinc-100">
@@ -1437,6 +1666,18 @@ export default function CreatorWorkspace() {
                         {selectedVideo.prompt || "—"}
                       </dd>
                     </div>
+                    {selectedVideo.styleDegraded ? (
+                      <div className="sm:col-span-2">
+                        <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2.5 text-xs leading-snug text-amber-100">
+                          Visual style was approximated — we could not find enough
+                          on-style clips for every beat.
+                          {typeof selectedVideo.styleAcceptanceRate ===
+                          "number"
+                            ? ` (${Math.round(selectedVideo.styleAcceptanceRate * 100)}% on-style.)`
+                            : null}
+                        </div>
+                      </div>
+                    ) : null}
                     {selectedVideo.script ? (
                       <div className="sm:col-span-2">
                         <dt className="text-xs text-zinc-500">Script</dt>

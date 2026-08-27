@@ -46,6 +46,8 @@ export const MAX_VISION_CALLS_PER_RENDER = 30;
 export const KEEP_BEST_MIN_SCORE = 0.35;
 /** How many motif-bank clips to pre-fetch for theme continuity. */
 export const MOTIF_BANK_SIZE = 16;
+/** Max alternates to vision-verify on strict style tiers. */
+export const MAX_ALTERNATE_VERIFY = 3;
 
 /**
  * Style-aware provider order (D5). Animated tier → Pixabay first.
@@ -353,18 +355,17 @@ export async function resolveVerifiedClip({
   }
 
   // Only keep a reject when relevance is plausible — otherwise motif bank fills.
+  // Strict tiers: never ship off-style bestRejected (return null → motif bank / skip).
   if (
     bestRejected &&
     !usedUrls.has(bestRejected.url) &&
-    bestRejected.score >= KEEP_BEST_MIN_SCORE
+    bestRejected.score >= KEEP_BEST_MIN_SCORE &&
+    !(strictTier && bestRejected.styleMatch === false)
   ) {
     usedUrls.add(bestRejected.url);
     console.log(
       JSON.stringify({
-        event:
-          strictTier && bestRejected.styleMatch === false
-            ? "clip_verify_keep_best_offstyle"
-            : "clip_verify_keep_best",
+        event: "clip_verify_keep_best",
         line: spoken.slice(0, 80),
         query: bestRejected.query,
         score: bestRejected.score,
@@ -496,8 +497,15 @@ async function resolveBeatDraft(
     });
   }
 
-  // Subject-over-style: motif via Pexels-first (null style) so theme holds when animation fails
-  if (!preferred?.url && motif && isPlausibleStockQuery(motif)) {
+  const strictTier = isStrictStyleTier(visualStyle);
+
+  // Subject-over-style: motif via Pexels-first (null style) — cinematic/realistic/horror only
+  if (
+    !preferred?.url &&
+    motif &&
+    isPlausibleStockQuery(motif) &&
+    !strictTier
+  ) {
     preferred = await resolveVerifiedClip({
       query: motif,
       line: line || motif,
@@ -511,9 +519,16 @@ async function resolveBeatDraft(
     }
   }
 
-  /** @type {{ url: string, provider?: string, providerAssetId?: string, query?: string }[]} */
+  /** @type {{ url: string, provider?: string, providerAssetId?: string, query?: string, styleMatch?: boolean, verified?: boolean }[]} */
   const alternates = [];
   const seen = new Set(preferred?.url ? [preferred.url] : []);
+  const alternateVerifyCap = strictTier ? MAX_ALTERNATE_VERIFY : MAX_FALLBACK_CANDIDATES;
+  const spoken = String(line || query || "").trim();
+  const budgetExhausted = () =>
+    visionBudget &&
+    typeof visionBudget.calls === "number" &&
+    visionBudget.calls >= MAX_VISION_CALLS_PER_RENDER;
+
   // Line-query alternates only — motif continuity is the shared bank, not per-beat dupes
   if (query && isPlausibleStockQuery(query)) {
     const hits = await collectClipCandidates(
@@ -521,13 +536,34 @@ async function resolveBeatDraft(
       new Set(),
       preferredOrientation,
       MAX_FALLBACK_CANDIDATES,
-      { visualStyle: null }
+      { visualStyle }
     );
     for (const hit of hits) {
       if (!hit.url || seen.has(hit.url)) continue;
-      seen.add(hit.url);
-      alternates.push({ ...hit, query });
-      if (alternates.length >= MAX_FALLBACK_CANDIDATES) break;
+
+      if (strictTier) {
+        if (!hit.imageUrl || budgetExhausted()) continue;
+        if (visionBudget) visionBudget.calls += 1;
+        const verdict = await verifyClipAgainstLine({
+          line: spoken || query,
+          query,
+          imageUrl: hit.imageUrl,
+          style: visualStyle,
+        });
+        if (!verdict.match || verdict.styleMatch !== true) continue;
+        seen.add(hit.url);
+        alternates.push({
+          ...hit,
+          query,
+          styleMatch: true,
+          verified: true,
+        });
+      } else {
+        seen.add(hit.url);
+        alternates.push({ ...hit, query, styleMatch: false, verified: false });
+      }
+
+      if (alternates.length >= alternateVerifyCap) break;
     }
   }
 
@@ -540,9 +576,12 @@ async function resolveBeatDraft(
  * @param {string} preferredOrientation
  * @param {number} need
  */
-async function buildMotifBank(motif, preferredOrientation, need) {
+async function buildMotifBank(motif, preferredOrientation, need, visualStyle = null) {
   const q = String(motif || "").trim();
   if (!q || !isPlausibleStockQuery(q)) return [];
+
+  const strictTier = isStrictStyleTier(visualStyle);
+  const styleForCollect = strictTier ? visualStyle : null;
 
   const limit = Math.min(
     MOTIF_BANK_SIZE,
@@ -553,7 +592,7 @@ async function buildMotifBank(motif, preferredOrientation, need) {
     new Set(),
     preferredOrientation,
     limit,
-    { visualStyle: null }
+    { visualStyle: styleForCollect }
   );
 
   // Shorten motif if sparse (e.g. "elephants and their behaviors" → "elephants")
@@ -565,7 +604,7 @@ async function buildMotifBank(motif, preferredOrientation, need) {
         new Set(hits.map((h) => h.url)),
         preferredOrientation,
         limit,
-        { visualStyle: null }
+        { visualStyle: styleForCollect }
       );
       const seen = new Set(hits.map((h) => h.url));
       for (const h of more) {
@@ -657,10 +696,13 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     })
   );
 
+  const strictTier = isStrictStyleTier(visualStyle);
+
   const motifBank = await buildMotifBank(
     motif,
     preferredOrientation,
-    cleaned.length
+    cleaned.length,
+    visualStyle
   );
 
   const drafts = await mapPool(cleaned, concurrency, async (query, i) => {
@@ -697,11 +739,11 @@ export async function fetchBrollForQueries(queries, opts = {}) {
         resolved = {
           url: alt.url,
           query: alt.query || query,
-          verified: false,
+          verified: Boolean(alt.verified),
           retried: true,
           provider: alt.provider,
           providerAssetId: alt.providerAssetId,
-          styleMatch: false,
+          styleMatch: alt.styleMatch === true,
         };
         console.log(
           JSON.stringify({
@@ -714,7 +756,7 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       }
     }
 
-    // Theme continuity: pull from shared motif bank before more random searches
+    // Theme continuity: motif bank (strict tiers only when style-routed bank has clips)
     if (!resolved?.url && motifBank.length > 0) {
       resolved = claimFromMotifBank(motifBank, usedUrls, motif);
       if (resolved?.url) {
@@ -730,7 +772,7 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       }
     }
 
-    if (!resolved?.url && motif && isPlausibleStockQuery(motif)) {
+    if (!resolved?.url && motif && isPlausibleStockQuery(motif) && !strictTier) {
       resolved = await pickUnusedClip({
         query: motif,
         usedUrls,
@@ -749,7 +791,7 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       }
     }
 
-    if (!resolved?.url && isPlausibleStockQuery(query)) {
+    if (!resolved?.url && isPlausibleStockQuery(query) && !strictTier) {
       resolved = await pickUnusedClip({
         query,
         usedUrls,
@@ -806,7 +848,6 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     throw err;
   }
 
-  const strictTier = isStrictStyleTier(visualStyle);
   const styleBeats = strictTier
     ? visualBeats.filter((b) => b.styleMatch === true).length
     : 0;

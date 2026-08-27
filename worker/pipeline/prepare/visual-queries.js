@@ -1,4 +1,4 @@
-import { STYLE_QUERY_VOCAB } from "./video-taxonomy.js";
+import { STYLE_QUERY_VOCAB, VISUAL_STYLE } from "./video-taxonomy.js";
 
 const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -55,6 +55,34 @@ export function isVagueStockQuery(query) {
 }
 
 /**
+ * Prefix primary style vocab when query lacks any style term (user terms win).
+ * @param {string} query
+ * @param {string | null} [visualStyle]
+ * @param {{ maxWords?: number }} [opts]
+ */
+export function injectStyleIntoQuery(query, visualStyle, opts = {}) {
+  const q = String(query || "").trim();
+  if (!q) return q;
+
+  const style = typeof visualStyle === "string" ? visualStyle.trim().toLowerCase() : "";
+  const vocab = style && STYLE_QUERY_VOCAB[style] ? STYLE_QUERY_VOCAB[style] : null;
+  if (!vocab || vocab.length === 0) return q;
+
+  const lower = q.toLowerCase();
+  const hasStyleTerm = vocab.some((term) => lower.includes(term.toLowerCase()));
+  if (hasStyleTerm) return q;
+
+  const maxWords = Number.isFinite(opts.maxWords) ? opts.maxWords : 8;
+  const primaryTerm = vocab[0];
+  const prefixWords = primaryTerm.split(/\s+/).filter(Boolean);
+  const queryWords = q.split(/\s+/).filter(Boolean);
+  const keepFromQuery = Math.max(1, maxWords - prefixWords.length);
+  const trimmedQuery = queryWords.slice(0, keepFromQuery).join(" ");
+
+  return `${primaryTerm} ${trimmedQuery}`.trim();
+}
+
+/**
  * Rewrite a vague query from the spoken line (and topic / style constraints).
  * @param {string} query
  * @param {string} line
@@ -63,8 +91,6 @@ export function isVagueStockQuery(query) {
  */
 export function hardenStockQuery(query, line, topic = "", visualStyle = null) {
   const q = String(query || "").trim();
-  const style = typeof visualStyle === "string" ? visualStyle.trim().toLowerCase() : "";
-  const vocab = style && STYLE_QUERY_VOCAB[style] ? STYLE_QUERY_VOCAB[style] : null;
 
   let hardened = q;
   if (isVagueStockQuery(q)) {
@@ -132,16 +158,7 @@ export function hardenStockQuery(query, line, topic = "", visualStyle = null) {
     }
   }
 
-  // Style-aware tail when style set and query lacks style vocab (D9 — user terms win).
-  if (vocab && vocab.length > 0) {
-    const lower = hardened.toLowerCase();
-    const hasStyleTerm = vocab.some((term) => lower.includes(term.toLowerCase()));
-    if (!hasStyleTerm && isVagueStockQuery(q)) {
-      hardened = `${hardened} ${vocab[0]}`.trim();
-    }
-  }
-
-  return hardened;
+  return injectStyleIntoQuery(hardened, visualStyle);
 }
 
 /**
@@ -243,9 +260,19 @@ export async function planVisualBeats(script, topic, opts = {}) {
     visualStyle && STYLE_QUERY_VOCAB[visualStyle]
       ? STYLE_QUERY_VOCAB[visualStyle]
       : null;
-  const stylePromptExtra = vocab
-    ? `\n- Prefer describing shots with a "${visualStyle}" look using terms like: ${vocab.join(", ")}. Honor any user-supplied style words over these presets.`
-    : "";
+  const isMotionGraphics = visualStyle === VISUAL_STYLE.MOTION_GRAPHICS;
+  const stylePromptExtra = isMotionGraphics
+    ? `\n- MOTION GRAPHICS MODE (required): Each shot.query must be abstract motion-graphics stock — NOT literal live-action photography.
+- Use kinetic typography, animated text, abstract shapes, icon reveals, motion graphics transitions, lower-thirds, data-viz animations.
+- Do NOT use literal photographic subjects (e.g. "scarecrow in a field", "farmer chuckling", "person walking", "hands typing").
+- For joke, story, or punchline lines, map to typographic/visual metaphors: "animated question mark", "kinetic text punchline", "comic speech bubble pop", "exclamation burst animation".
+- Prefer terms like: ${(vocab || ["motion graphics", "kinetic typography"]).join(", ")}. Honor any user-supplied style words over these presets.`
+    : vocab
+      ? `\n- Prefer describing shots with a "${visualStyle}" look using terms like: ${vocab.join(", ")}. Honor any user-supplied style words over these presets.`
+      : "";
+  const querySubjectRule = isMotionGraphics
+    ? "- Each shot.query must depict abstract motion-graphics elements (typography, shapes, icons, transitions) that metaphorically support that line — not literal camera subjects."
+    : "- Each shot.query must depict WHAT THAT LINE IS SAYING (objects, hands, places, actions a camera can film).";
 
   const lines = beatLinesFromScript(script);
   const numbered = lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
@@ -267,8 +294,8 @@ export async function planVisualBeats(script, topic, opts = {}) {
 
 Rules:
 - You receive N numbered lines. Return exactly N shots in the same order.
-- Each shot.query must depict WHAT THAT LINE IS SAYING (objects, hands, places, actions a camera can film).
-- Queries: concrete stock-video phrases, 2–6 words (e.g. "close up coffee pour", "bodyweight push ups floor").
+${querySubjectRule}
+- Queries: concrete stock-video phrases, 2–6 words (e.g. "close up coffee pour", "bodyweight push ups floor"${isMotionGraphics ? '; motion graphics: "kinetic text punchline", "abstract shapes reveal", "animated question mark pop"' : ""}).
 - Honor TOPIC constraints literally (e.g. "no equipment" → bodyweight / living room — never gym machines or dumbbells; "home" → indoor home setting).
 - Ban vague filler: intensity, atmosphere, vibes, motivation, mindset, "intense workout close up", "person working out", lone "close up"/"detail"/"wide shot".
 - Motif is secondary: same visual world is good, but NEVER sacrifice line meaning for motif continuity.

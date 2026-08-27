@@ -85,6 +85,8 @@ export const STYLE_QUERY_VOCAB = Object.freeze({
     "motion graphics",
     "kinetic typography",
     "abstract shapes",
+    "animated text",
+    "icon animation",
   ]),
   [VISUAL_STYLE.ANIME_COMIC]: Object.freeze([
     "anime",

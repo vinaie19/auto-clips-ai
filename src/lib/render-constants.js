@@ -265,51 +265,61 @@ export const VISUAL_STYLES = [
     id: "realistic",
     label: "Realistic",
     blurb: "True-to-life footage — documentary, how-to, everyday moments.",
+    previewSrc: "/styles/realistic.jpg?v=2",
   },
   {
     id: "cinematic",
     label: "Cinematic",
     blurb: "Film look — golden hour, shallow depth of field, dramatic framing.",
+    previewSrc: "/styles/cinematic.jpg?v=2",
   },
   {
     id: "cartoon",
     label: "Cartoon",
     blurb: "Playful illustrated look — bold shapes, flat color.",
+    previewSrc: "/styles/cartoon.jpg?v=2",
   },
   {
     id: "2d animation",
     label: "2D Animation",
     blurb: "Flat vector motion — explainer and infographic energy.",
+    previewSrc: "/styles/2d-animation.jpg?v=2",
   },
   {
     id: "3d animation",
     label: "3D Animation",
     blurb: "Rendered 3D worlds and objects.",
+    previewSrc: "/styles/3d-animation.jpg?v=2",
   },
   {
     id: "motion graphics",
     label: "Motion Graphics",
-    blurb: "Kinetic typography and abstract shapes.",
+    blurb: "Kinetic typography and abstract shapes — best for facts, stats, and explainers.",
+    previewSrc: "/styles/motion-graphics.jpg?v=2",
   },
   {
     id: "anime/comic",
     label: "Anime / Comic",
     blurb: "Manga and comic-panel styling.",
+    previewSrc: "/styles/anime-comic.jpg?v=2",
   },
   {
     id: "horror/dark",
     label: "Horror / Dark",
     blurb: "Moody, shadowed, dread-forward frames.",
+    previewSrc: "/styles/horror-dark.jpg?v=2",
   },
   {
     id: "minimal",
     label: "Minimal",
     blurb: "Clean, sparse compositions — lots of negative space.",
+    previewSrc: "/styles/minimal.jpg?v=2",
   },
   {
     id: "vintage",
     label: "Vintage",
     blurb: "Retro film grain and period look.",
+    previewSrc: "/styles/vintage.jpg?v=3",
   },
 ];
 
