@@ -4,6 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRenderPipeline } from "./pipeline/index.js";
+import { sweepExpiredVideos } from "./pipeline/retention.js";
 
 const WORKER_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,8 @@ loadEnvFile(join(WORKER_DIR, "..", ".env.local"));
 
 const LEASE_SECONDS = Number(process.env.LEASE_SECONDS || 600);
 const POLL_MS = Number(process.env.POLL_MS || 3000);
+/** Run the retention sweep at most this often. */
+const RETENTION_SWEEP_MS = Number(process.env.RETENTION_SWEEP_MS || 15 * 60 * 1000);
 const WORKER_ID = process.env.WORKER_ID || `worker-${randomUUID().slice(0, 8)}`;
 /** Stub only when explicitly STUB_RENDER=1 */
 const STUB_RENDER = process.env.STUB_RENDER === "1";
@@ -318,8 +321,13 @@ async function main() {
     })
   );
 
+  let lastSweep = 0;
   for (;;) {
     try {
+      if (Date.now() - lastSweep >= RETENTION_SWEEP_MS) {
+        await sweepExpiredVideos(supabase);
+        lastSweep = Date.now();
+      }
       const job = await claimJob(supabase);
       if (!job?.id) {
         await sleep(POLL_MS);
@@ -327,6 +335,7 @@ async function main() {
       }
       await processJob(supabase, job);
     } catch (err) {
+      // A sweep error must not kill the claim loop.
       console.error("worker loop error:", err);
       await sleep(5000);
     }
