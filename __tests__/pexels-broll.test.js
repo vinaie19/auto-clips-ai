@@ -5,6 +5,8 @@ import {
   MAX_VERIFY_CANDIDATES,
   MAX_VISION_ATTEMPTS,
   MAX_QUERY_ROUNDS,
+  MAX_STYLE_RETRIES,
+  MAX_VISION_CALLS_PER_RENDER,
 } from "@/lib/pexels-broll";
 
 describe("pickOptimalMp4", () => {
@@ -33,9 +35,11 @@ describe("visual beat limits", () => {
     expect(MAX_VISUAL_BEATS).toBe(15);
   });
 
-  it("keeps a small retry budget for faster generate", () => {
-    expect(MAX_VISION_ATTEMPTS).toBe(2);
-    expect(MAX_VERIFY_CANDIDATES).toBeLessThanOrEqual(3);
-    expect(MAX_QUERY_ROUNDS).toBeLessThanOrEqual(2);
+  it("keeps style + vision budgets from the plan", () => {
+    expect(MAX_VISION_ATTEMPTS).toBe(3);
+    expect(MAX_VERIFY_CANDIDATES).toBe(6);
+    expect(MAX_QUERY_ROUNDS).toBe(3);
+    expect(MAX_STYLE_RETRIES).toBe(2);
+    expect(MAX_VISION_CALLS_PER_RENDER).toBe(30);
   });
 });

@@ -259,6 +259,99 @@ export const ASPECT_RATIOS = {
 
 export const ASPECT_RATIO_IDS = Object.keys(ASPECT_RATIOS);
 
+/** Visual styles — lowercase-with-spaces canonical ids (Keep in sync with worker/pipeline/prepare/video-taxonomy.js, F11). */
+export const VISUAL_STYLES = [
+  {
+    id: "realistic",
+    label: "Realistic",
+    blurb: "True-to-life footage — documentary, how-to, everyday moments.",
+  },
+  {
+    id: "cinematic",
+    label: "Cinematic",
+    blurb: "Film look — golden hour, shallow depth of field, dramatic framing.",
+  },
+  {
+    id: "cartoon",
+    label: "Cartoon",
+    blurb: "Playful illustrated look — bold shapes, flat color.",
+  },
+  {
+    id: "2d animation",
+    label: "2D Animation",
+    blurb: "Flat vector motion — explainer and infographic energy.",
+  },
+  {
+    id: "3d animation",
+    label: "3D Animation",
+    blurb: "Rendered 3D worlds and objects.",
+  },
+  {
+    id: "motion graphics",
+    label: "Motion Graphics",
+    blurb: "Kinetic typography and abstract shapes.",
+  },
+  {
+    id: "anime/comic",
+    label: "Anime / Comic",
+    blurb: "Manga and comic-panel styling.",
+  },
+  {
+    id: "horror/dark",
+    label: "Horror / Dark",
+    blurb: "Moody, shadowed, dread-forward frames.",
+  },
+  {
+    id: "minimal",
+    label: "Minimal",
+    blurb: "Clean, sparse compositions — lots of negative space.",
+  },
+  {
+    id: "vintage",
+    label: "Vintage",
+    blurb: "Retro film grain and period look.",
+  },
+];
+
+export const VISUAL_STYLE_IDS = VISUAL_STYLES.map((s) => s.id);
+
+/**
+ * Resolve a posted visual style. Returns the canonical id, null when unset/Auto
+ * (route omits the field), or undefined when an unknown non-empty value is
+ * posted (route returns 400).
+ * @param {unknown} value
+ * @returns {string | null | undefined}
+ */
+export function resolveVisualStyle(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const raw = value.trim();
+  if (raw === "" || raw.toLowerCase() === "auto") return null;
+  const id = raw.toLowerCase();
+  if (VISUAL_STYLE_IDS.includes(id)) return id;
+  return undefined;
+}
+
+/** Auto-derived purpose from narration tone — never a manual picker (D13). */
+export const PURPOSE_BY_TONE = {
+  Moody: "horror/story recap",
+  Corporate: "product promotion",
+  Cinematic: "documentary",
+  Playful: "social/news",
+  Urgent: "motivation",
+  Educational: "educational",
+  Storyteller: "storytelling",
+  Luxurious: "product promotion",
+};
+
+/**
+ * @param {string} [tone]
+ * @returns {string} a D2 purpose value
+ */
+export function resolvePurpose(tone) {
+  return PURPOSE_BY_TONE[tone] || "storytelling";
+}
+
 /**
  * @param {unknown} value
  * @returns {30 | 45 | 60}

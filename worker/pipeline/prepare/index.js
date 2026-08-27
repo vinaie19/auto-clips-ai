@@ -1,6 +1,11 @@
 import { draftScript } from "./script.js";
 import { planVisualBeats } from "./visual-queries.js";
 import { fetchBrollForQueries } from "./pexels-broll.js";
+import {
+  normalizePurpose,
+  normalizeVisualStyle,
+  PURPOSE_STYLE_DEFAULT,
+} from "./video-taxonomy.js";
 
 const ASPECT_ORIENTATION = {
   "9:16": "portrait",
@@ -26,7 +31,7 @@ export function isPayloadPrepared(job) {
 }
 
 /**
- * Draft script, plan beats, fetch Pexels/vision B-roll; persist onto the job row.
+ * Draft script, plan beats, fetch Pexels/Pixabay/vision B-roll; persist onto the job row.
  * @param {import("@supabase/supabase-js").SupabaseClient} supabase
  * @param {object} job
  * @returns {Promise<object>} updated job (payload + script filled)
@@ -51,12 +56,20 @@ export async function prepareJobAssets(supabase, job) {
     ? payload.aspectRatio
     : "9:16";
 
+  payload.purpose = normalizePurpose(payload.purpose);
+  payload.visualStyle =
+    normalizeVisualStyle(payload.visualStyle) ??
+    PURPOSE_STYLE_DEFAULT[payload.purpose] ??
+    "realistic";
+
   console.log(
     JSON.stringify({
       event: "step_prepare",
       video_id: job.id,
       topic: topic.slice(0, 80),
       tone,
+      purpose: payload.purpose,
+      visual_style: payload.visualStyle,
       target_s: targetDurationSeconds,
       aspect: aspectRatio,
     })
@@ -79,7 +92,9 @@ export async function prepareJobAssets(supabase, job) {
     })
   );
 
-  const visualPlan = await planVisualBeats(script, topic);
+  const visualPlan = await planVisualBeats(script, topic, {
+    visualStyle: payload.visualStyle,
+  });
   console.log(
     JSON.stringify({
       event: "prepare_beats_ok",
@@ -89,20 +104,25 @@ export async function prepareJobAssets(supabase, job) {
     })
   );
 
-  const { pexelsVideoUrls, visualBeats } = await fetchBrollForQueries(
-    visualPlan.queries,
-    {
-      weights: visualPlan.weights,
-      lines: visualPlan.lines,
-      motif: visualPlan.motif,
-      orientation: ASPECT_ORIENTATION[aspectRatio],
-    }
-  );
+  const {
+    pexelsVideoUrls,
+    visualBeats,
+    styleAcceptanceRate,
+    styleDegraded,
+  } = await fetchBrollForQueries(visualPlan.queries, {
+    weights: visualPlan.weights,
+    lines: visualPlan.lines,
+    motif: visualPlan.motif,
+    orientation: ASPECT_ORIENTATION[aspectRatio],
+    visualStyle: payload.visualStyle,
+  });
   console.log(
     JSON.stringify({
       event: "prepare_broll_ok",
       video_id: job.id,
       clips: pexelsVideoUrls.length,
+      style_acceptance_rate: styleAcceptanceRate,
+      style_degraded: styleDegraded,
     })
   );
 
@@ -110,6 +130,8 @@ export async function prepareJobAssets(supabase, job) {
     ...payload,
     topic,
     tone,
+    purpose: payload.purpose,
+    visualStyle: payload.visualStyle,
     targetDurationSeconds,
     aspectRatio,
     script,
@@ -119,8 +141,12 @@ export async function prepareJobAssets(supabase, job) {
     visualLines: visualPlan.lines,
     visualMotif: visualPlan.motif,
     visualAvoid: visualPlan.avoid,
+    styleDegraded: Boolean(styleDegraded),
     preparedAt: new Date().toISOString(),
   };
+  if (styleAcceptanceRate !== null && styleAcceptanceRate !== undefined) {
+    nextPayload.styleAcceptanceRate = styleAcceptanceRate;
+  }
 
   const { data, error } = await supabase
     .from("videos")

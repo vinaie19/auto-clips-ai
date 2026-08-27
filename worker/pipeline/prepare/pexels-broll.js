@@ -1,92 +1,59 @@
 /**
- * Pexels B-roll: one clip per spoken script line (line-bound beats).
- * gpt-4o-mini vision verifies stills with a small retry budget (speed-first).
+ * B-roll: one clip per spoken script line (line-bound beats).
+ * Routes Pexels + Pixabay by visual style; gpt-4o-mini vision verifies stills.
  */
 
 import { verifyClipAgainstLine } from "./clip-verify.js";
+import { isStrictStyleTier } from "./video-taxonomy.js";
+import {
+  pickOptimalMp4,
+  pickPreviewImage,
+  searchCandidates,
+  getPexelsApiKey,
+} from "./providers.js";
 
-const PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/v1/videos/search";
+export { pickOptimalMp4, pickPreviewImage };
+export {
+  SEARCH_CACHE_TTL_MS,
+  clearProviderSearchCache,
+  toProviderParams,
+  toAsset,
+  createMediaCache,
+  createRenderMediaCache,
+  _resetProviderStateForTests,
+  searchCandidates,
+  getPexelsApiKey,
+} from "./providers.js";
 
 export const MAX_VISUAL_BEATS = 15;
 export const MIN_VISUAL_BEATS = 4;
-/** Pexels hits to try per search query before a betterQuery round. */
+/** Provider hits to try per search query before a betterQuery round. */
 export const MAX_VERIFY_CANDIDATES = 6;
-/** Max vision API calls per beat. */
+/** Max vision API calls per beat (relevance). */
 export const MAX_VISION_ATTEMPTS = 3;
-/** Max distinct Pexels search queries per beat (initial + betterQuery rounds). */
+/** Max distinct search queries per beat (initial + betterQuery rounds). */
 export const MAX_QUERY_ROUNDS = 3;
-/** Extra unused clips to grab when vision path finds nothing (no reuse of prior beat). */
+/** Extra unused clips when vision path finds nothing. */
 export const MAX_FALLBACK_CANDIDATES = 8;
+/** Strict-tier style-mismatch retries before betterQuery (D6). */
+export const MAX_STYLE_RETRIES = 2;
+/** Hard cap on vision calls across the whole render (F12). */
+export const MAX_VISION_CALLS_PER_RENDER = 30;
 
 /**
- * Prefer 720–1080p mp4; bias toward preferred orientation.
- * @param {unknown[]} videoFiles
- * @param {"portrait" | "landscape" | "square" | undefined} preferred
+ * Style-aware provider order (D5). Animated tier → Pixabay first.
+ * @param {string | null | undefined} visualStyle
+ * @returns {("pexels" | "pixabay")[]}
  */
-export function pickOptimalMp4(videoFiles, preferred) {
-  const files = (videoFiles || []).filter((file) => {
-    const link = typeof file?.link === "string" ? file.link : "";
-    const width = Number(file?.width) || 0;
-    const isMp4 =
-      file?.file_type === "video/mp4" || link.toLowerCase().includes(".mp4");
-    return isMp4 && width >= 640 && width <= 1920;
-  });
-
-  const score = (file) => {
-    const w = Number(file.width) || 0;
-    const h = Number(file.height) || 0;
-    let orientBonus = 0;
-    if (preferred === "portrait") orientBonus = h > w ? 1000 : 0;
-    else if (preferred === "landscape") orientBonus = w > h ? 1000 : 0;
-    else if (preferred === "square") orientBonus = Math.abs(w - h) < w * 0.15 ? 1000 : 0;
-    else orientBonus = h > w ? 500 : 0;
-    const near1080 = -Math.abs(Math.max(w, h) - 1080);
-    return orientBonus + near1080;
-  };
-
-  files.sort((a, b) => score(b) - score(a));
-  return files[0]?.link || null;
-}
-
-/** Best preview image URL from a Pexels video object. */
-export function pickPreviewImage(video) {
-  if (typeof video?.image === "string" && video.image.startsWith("http")) {
-    return video.image;
+export function providerOrderForStyle(visualStyle) {
+  if (isStrictStyleTier(visualStyle)) {
+    return ["pixabay", "pexels"];
   }
-  const pics = Array.isArray(video?.video_pictures) ? video.video_pictures : [];
-  for (const p of pics) {
-    if (typeof p?.picture === "string" && p.picture.startsWith("http")) {
-      return p.picture;
-    }
-  }
-  return null;
-}
-
-async function searchPexelsOnce(apiKey, query, { orientation } = {}) {
-  const params = new URLSearchParams({
-    query,
-    per_page: "8",
-  });
-  if (orientation) params.set("orientation", orientation);
-
-  const response = await fetch(`${PEXELS_VIDEO_SEARCH_URL}?${params}`, {
-    method: "GET",
-    headers: { Authorization: apiKey },
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    console.error("Pexels search error:", query, detail.slice(0, 200));
-    return [];
-  }
-
-  const data = await response.json();
-  return Array.isArray(data?.videos) ? data.videos : [];
+  return ["pexels", "pixabay"];
 }
 
 function orientationTryOrder(preferredOrientation) {
-  const pexelsOrientation =
+  const primary =
     preferredOrientation === "square"
       ? undefined
       : preferredOrientation === "landscape"
@@ -96,39 +63,59 @@ function orientationTryOrder(preferredOrientation) {
           : "portrait";
 
   return [
-    pexelsOrientation,
-    pexelsOrientation === "portrait" ? "landscape" : "portrait",
+    primary,
+    primary === "portrait" ? "landscape" : "portrait",
     undefined,
   ].filter((v, i, arr) => arr.indexOf(v) === i);
 }
 
 /**
- * Collect unused mp4 + preview candidates for a query (does not mutate usedUrls).
- * @returns {Promise<{ url: string, imageUrl: string | null }[]>}
+ * Collect unused mp4 + preview candidates (does not mutate usedUrls).
+ * @returns {Promise<{ url: string, imageUrl: string | null, provider: string, providerAssetId: string }[]>}
  */
 async function collectClipCandidates(
-  apiKey,
   query,
   usedUrls,
   preferredOrientation,
-  limit = MAX_VERIFY_CANDIDATES
+  limit = MAX_VERIFY_CANDIDATES,
+  { visualStyle } = {}
 ) {
   const q = String(query || "").trim();
   if (!q) return [];
 
-  /** @type {{ url: string, imageUrl: string | null }[]} */
+  /** @type {{ url: string, imageUrl: string | null, provider: string, providerAssetId: string }[]} */
   const out = [];
   const seen = new Set();
+  const order = providerOrderForStyle(visualStyle);
+  const wantAnimation = isStrictStyleTier(visualStyle);
 
-  for (const orientation of orientationTryOrder(preferredOrientation)) {
+  for (const provider of order) {
     if (out.length >= limit) break;
-    const videos = await searchPexelsOnce(apiKey, q, { orientation });
-    for (const video of videos) {
+    for (const orientation of orientationTryOrder(preferredOrientation)) {
       if (out.length >= limit) break;
-      const link = pickOptimalMp4(video?.video_files, preferredOrientation);
-      if (!link || usedUrls.has(link) || seen.has(link)) continue;
-      seen.add(link);
-      out.push({ url: link, imageUrl: pickPreviewImage(video) });
+      const result = await searchCandidates(
+        q,
+        {
+          orientation,
+          videoType:
+            provider === "pixabay" && wantAnimation ? "animation" : undefined,
+          visualStyle,
+        },
+        provider
+      );
+
+      if (result.provider_unavailable || result.rateLimited) {
+        break;
+      }
+
+      for (const asset of result.results || []) {
+        if (out.length >= limit) break;
+        if (!asset?.url || usedUrls.has(asset.url) || seen.has(asset.url)) {
+          continue;
+        }
+        seen.add(asset.url);
+        out.push(asset);
+      }
     }
   }
 
@@ -136,38 +123,44 @@ async function collectClipCandidates(
 }
 
 /**
- * Pick clip and vision-verify vs spoken line.
- * Retries a few candidates + one betterQuery round, or keeps best still.
- * Rejected candidates stay reusable for later beats (not added to usedUrls).
- * @returns {Promise<{ url: string, query: string, verified: boolean, retried: boolean } | null>}
+ * Pick clip and vision-verify vs spoken line (+ optional style axis).
+ * @returns {Promise<{ url: string, query: string, verified: boolean, retried: boolean, provider?: string, providerAssetId?: string, styleMatch?: boolean } | null>}
  */
 export async function resolveVerifiedClip({
-  apiKey,
   query,
   line,
   usedUrls,
   preferredOrientation,
+  visualStyle = null,
+  visionBudget = null,
 }) {
   const initialQuery = String(query || "").trim();
   if (!initialQuery) return null;
 
   const spoken = String(line || "").trim() || initialQuery;
   const triedQueries = new Set();
-  /** URLs already judged this beat (rejects) — keep out of usedUrls until accept. */
   const triedUrls = new Set();
   let searchQuery = initialQuery;
   let visionAttempts = 0;
   let queryRounds = 0;
+  let styleRetries = 0;
   let lastBetterQuery = null;
+  const strictTier = isStrictStyleTier(visualStyle);
 
-  /** @type {{ url: string, query: string, score: number } | null} */
+  /** @type {{ url: string, query: string, score: number, styleScore?: number, provider?: string, providerAssetId?: string, styleMatch?: boolean } | null} */
   let bestRejected = null;
 
   const lineFallback = `${spoken.split(/\s+/).slice(0, 5).join(" ")}`.trim();
 
+  const budgetExhausted = () =>
+    visionBudget &&
+    typeof visionBudget.calls === "number" &&
+    visionBudget.calls >= MAX_VISION_CALLS_PER_RENDER;
+
   while (
     visionAttempts < MAX_VISION_ATTEMPTS &&
-    queryRounds < MAX_QUERY_ROUNDS
+    queryRounds < MAX_QUERY_ROUNDS &&
+    !budgetExhausted()
   ) {
     const qKey = searchQuery.toLowerCase();
     if (triedQueries.has(qKey)) break;
@@ -176,11 +169,11 @@ export async function resolveVerifiedClip({
 
     const blocked = new Set([...usedUrls, ...triedUrls]);
     const candidates = await collectClipCandidates(
-      apiKey,
       searchQuery,
       blocked,
       preferredOrientation,
-      MAX_VERIFY_CANDIDATES
+      MAX_VERIFY_CANDIDATES,
+      { visualStyle }
     );
 
     if (candidates.length === 0) {
@@ -197,7 +190,7 @@ export async function resolveVerifiedClip({
     }
 
     for (const hit of candidates) {
-      if (visionAttempts >= MAX_VISION_ATTEMPTS) break;
+      if (visionAttempts >= MAX_VISION_ATTEMPTS || budgetExhausted()) break;
       if (triedUrls.has(hit.url) || usedUrls.has(hit.url)) continue;
 
       if (!hit.imageUrl) {
@@ -207,22 +200,29 @@ export async function resolveVerifiedClip({
           query: searchQuery,
           verified: false,
           retried: queryRounds > 1 || visionAttempts > 0,
+          provider: hit.provider,
+          providerAssetId: hit.providerAssetId,
+          styleMatch: false,
         };
       }
 
       visionAttempts += 1;
+      if (visionBudget) visionBudget.calls += 1;
       triedUrls.add(hit.url);
+
       const verdict = await verifyClipAgainstLine({
         line: spoken,
         query: searchQuery,
         imageUrl: hit.imageUrl,
+        style: strictTier ? visualStyle : null,
       });
 
       if (verdict.betterQuery) {
         lastBetterQuery = verdict.betterQuery.trim();
       }
 
-      if (verdict.match) {
+      const styleOk = !strictTier || verdict.styleMatch === true;
+      if (verdict.match && styleOk) {
         usedUrls.add(hit.url);
         console.log(
           JSON.stringify({
@@ -230,8 +230,10 @@ export async function resolveVerifiedClip({
             line: spoken.slice(0, 80),
             query: searchQuery,
             score: verdict.score,
+            style_score: verdict.styleScore,
             attempts: visionAttempts,
             rounds: queryRounds,
+            provider: hit.provider,
           })
         );
         return {
@@ -239,7 +241,44 @@ export async function resolveVerifiedClip({
           query: searchQuery,
           verified: true,
           retried: visionAttempts > 1 || queryRounds > 1,
+          provider: hit.provider,
+          providerAssetId: hit.providerAssetId,
+          styleMatch: Boolean(verdict.styleMatch),
         };
+      }
+
+      if (verdict.match && strictTier && !styleOk) {
+        styleRetries += 1;
+        console.log(
+          JSON.stringify({
+            event: "clip_verify_style_reject",
+            line: spoken.slice(0, 80),
+            query: searchQuery,
+            score: verdict.score,
+            style_score: verdict.styleScore,
+            style_retries: styleRetries,
+            provider: hit.provider,
+          })
+        );
+        if (
+          !bestRejected ||
+          (verdict.styleScore ?? 0) >= (bestRejected.styleScore ?? -1) ||
+          verdict.score >= bestRejected.score
+        ) {
+          bestRejected = {
+            url: hit.url,
+            query: searchQuery,
+            score: verdict.score,
+            styleScore: verdict.styleScore ?? 0,
+            provider: hit.provider,
+            providerAssetId: hit.providerAssetId,
+            styleMatch: false,
+          };
+        }
+        if (styleRetries < MAX_STYLE_RETRIES) {
+          continue;
+        }
+        break;
       }
 
       if (!bestRejected || verdict.score >= bestRejected.score) {
@@ -247,6 +286,9 @@ export async function resolveVerifiedClip({
           url: hit.url,
           query: searchQuery,
           score: verdict.score,
+          provider: hit.provider,
+          providerAssetId: hit.providerAssetId,
+          styleMatch: Boolean(verdict.styleMatch),
         };
       }
 
@@ -288,7 +330,10 @@ export async function resolveVerifiedClip({
     usedUrls.add(bestRejected.url);
     console.log(
       JSON.stringify({
-        event: "clip_verify_keep_best",
+        event:
+          strictTier && bestRejected.styleMatch === false
+            ? "clip_verify_keep_best_offstyle"
+            : "clip_verify_keep_best",
         line: spoken.slice(0, 80),
         query: bestRejected.query,
         score: bestRejected.score,
@@ -301,6 +346,9 @@ export async function resolveVerifiedClip({
       query: bestRejected.query,
       verified: false,
       retried: true,
+      provider: bestRejected.provider,
+      providerAssetId: bestRejected.providerAssetId,
+      styleMatch: Boolean(bestRejected.styleMatch),
     };
   }
 
@@ -308,24 +356,23 @@ export async function resolveVerifiedClip({
 }
 
 /**
- * First unused mp4 for a query (no vision) — keeps cuts visually distinct.
- * @returns {Promise<{ url: string, query: string, verified: boolean, retried: boolean } | null>}
+ * First unused mp4 for a query (no vision).
  */
 export async function pickUnusedClip({
-  apiKey,
   query,
   usedUrls,
   preferredOrientation,
+  visualStyle = null,
   limit = MAX_FALLBACK_CANDIDATES,
 }) {
   const q = String(query || "").trim();
   if (!q) return null;
   const candidates = await collectClipCandidates(
-    apiKey,
     q,
     usedUrls,
     preferredOrientation,
-    limit
+    limit,
+    { visualStyle }
   );
   const hit = candidates.find((c) => c.url && !usedUrls.has(c.url));
   if (!hit) return null;
@@ -335,11 +382,14 @@ export async function pickUnusedClip({
     query: q,
     verified: false,
     retried: true,
+    provider: hit.provider,
+    providerAssetId: hit.providerAssetId,
+    styleMatch: false,
   };
 }
 
 /**
- * Bounded parallel map (same idea as clip download pool).
+ * Bounded parallel map.
  * @template T, R
  * @param {T[]} items
  * @param {number} concurrency
@@ -372,35 +422,40 @@ function brollConcurrency() {
   );
 }
 
-/**
- * Resolve one beat's preferred clip + alternate unused URLs (no shared usedUrls).
- * Parallel-safe: collisions are resolved in a later serial claim pass.
- */
-async function resolveBeatDraft(apiKey, query, line, motif, preferredOrientation) {
+async function resolveBeatDraft(
+  query,
+  line,
+  motif,
+  preferredOrientation,
+  visualStyle,
+  visionBudget
+) {
   const lineFallback = line
     ? line.split(/\s+/).slice(0, 5).join(" ").trim()
     : "";
   const privateUsed = new Set();
 
   let preferred = await resolveVerifiedClip({
-    apiKey,
     query,
     line,
     usedUrls: privateUsed,
     preferredOrientation,
+    visualStyle,
+    visionBudget,
   });
 
   if (!preferred?.url && motif) {
     preferred = await resolveVerifiedClip({
-      apiKey,
       query: motif,
       line: line || motif,
       usedUrls: privateUsed,
       preferredOrientation,
+      visualStyle,
+      visionBudget,
     });
   }
 
-  /** @type {string[]} */
+  /** @type {{ url: string, provider?: string, providerAssetId?: string }[]} */
   const alternates = [];
   const seen = new Set(preferred?.url ? [preferred.url] : []);
   const searchQueries = [query, lineFallback, motif].filter(
@@ -409,16 +464,16 @@ async function resolveBeatDraft(apiKey, query, line, motif, preferredOrientation
 
   for (const fq of searchQueries) {
     const hits = await collectClipCandidates(
-      apiKey,
       fq,
       new Set(),
       preferredOrientation,
-      MAX_FALLBACK_CANDIDATES
+      MAX_FALLBACK_CANDIDATES,
+      { visualStyle }
     );
     for (const hit of hits) {
       if (!hit.url || seen.has(hit.url)) continue;
       seen.add(hit.url);
-      alternates.push(hit.url);
+      alternates.push(hit);
       if (alternates.length >= MAX_FALLBACK_CANDIDATES) break;
     }
     if (alternates.length >= MAX_FALLBACK_CANDIDATES) break;
@@ -428,23 +483,23 @@ async function resolveBeatDraft(apiKey, query, line, motif, preferredOrientation
 }
 
 /**
- * Map line-bound visual beat queries → Pexels URLs (ordered).
- * Resolves beats in parallel (BROLL_CONCURRENCY, default 3), then claims
- * unique URLs in order so cuts stay distinct.
+ * Map line-bound visual beat queries → stock URLs (ordered).
  *
  * @param {string[]} queries
- * @param {{ weights?: number[], lines?: string[], motif?: string, orientation?: string }} [opts]
- * @returns {Promise<{ pexelsVideoUrls: string[], visualBeats: { query: string, url: string, weight: number, line: string | null, verified?: boolean, retried?: boolean }[], motif: string | null }>}
+ * @param {{ weights?: number[], lines?: string[], motif?: string, orientation?: string, visualStyle?: string | null }} [opts]
  */
 export async function fetchBrollForQueries(queries, opts = {}) {
-  const apiKey = process.env.PEXELS_API_KEY;
-  if (!apiKey || apiKey === "your_pexels_key_here") {
+  if (!getPexelsApiKey()) {
     throw new Error("PEXELS_API_KEY is not configured on the worker.");
   }
 
   const weights = Array.isArray(opts.weights) ? opts.weights : [];
   const lines = Array.isArray(opts.lines) ? opts.lines : [];
   const motif = typeof opts.motif === "string" ? opts.motif : null;
+  const visualStyle =
+    typeof opts.visualStyle === "string" && opts.visualStyle.trim()
+      ? opts.visualStyle.trim().toLowerCase()
+      : null;
   const preferredOrientation =
     opts.orientation === "landscape" ||
     opts.orientation === "portrait" ||
@@ -462,11 +517,15 @@ export async function fetchBrollForQueries(queries, opts = {}) {
   }
 
   const concurrency = brollConcurrency();
+  /** @type {{ calls: number }} */
+  const visionBudget = { calls: 0 };
+
   console.log(
     JSON.stringify({
       event: "broll_fetch_start",
       count: cleaned.length,
       concurrency,
+      visual_style: visualStyle,
     })
   );
 
@@ -474,11 +533,12 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     const line =
       typeof lines[i] === "string" && lines[i].trim() ? lines[i].trim() : null;
     const draft = await resolveBeatDraft(
-      apiKey,
       query,
       line,
       motif,
-      preferredOrientation
+      preferredOrientation,
+      visualStyle,
+      visionBudget
     );
     return { index: i, query, line, ...draft };
   });
@@ -494,14 +554,19 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       usedUrls.add(preferred.url);
       resolved = preferred;
     } else {
-      const altUrl = (alternates || []).find((u) => u && !usedUrls.has(u));
-      if (altUrl) {
-        usedUrls.add(altUrl);
+      const alt = (alternates || []).find(
+        (a) => a?.url && !usedUrls.has(a.url)
+      );
+      if (alt) {
+        usedUrls.add(alt.url);
         resolved = {
-          url: altUrl,
+          url: alt.url,
           query,
           verified: false,
           retried: true,
+          provider: alt.provider,
+          providerAssetId: alt.providerAssetId,
+          styleMatch: false,
         };
         console.log(
           JSON.stringify({
@@ -520,10 +585,10 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       );
       for (const fq of fallbackQueries) {
         resolved = await pickUnusedClip({
-          apiKey,
           query: fq,
           usedUrls,
           preferredOrientation,
+          visualStyle,
         });
         if (resolved?.url) {
           console.log(
@@ -548,6 +613,9 @@ export async function fetchBrollForQueries(queries, opts = {}) {
         weight: Number.isFinite(weight) && weight > 0 ? weight : 1,
         verified: Boolean(resolved.verified),
         retried: Boolean(resolved.retried),
+        provider: resolved.provider || "pexels",
+        providerAssetId: resolved.providerAssetId || resolved.url,
+        styleMatch: resolved.styleMatch === true,
       });
     } else {
       console.log(
@@ -562,7 +630,7 @@ export async function fetchBrollForQueries(queries, opts = {}) {
   }
 
   if (visualBeats.length === 0) {
-    throw new Error("Failed to fetch any related B-roll clips from Pexels.");
+    throw new Error("Failed to fetch any related B-roll clips.");
   }
 
   if (visualBeats.length < Math.min(MIN_VISUAL_BEATS, cleaned.length)) {
@@ -573,6 +641,17 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     throw err;
   }
 
+  const strictTier = isStrictStyleTier(visualStyle);
+  const styleBeats = strictTier
+    ? visualBeats.filter((b) => b.styleMatch === true).length
+    : 0;
+  const styleAcceptanceRate = strictTier
+    ? visualBeats.length > 0
+      ? styleBeats / visualBeats.length
+      : null
+    : null;
+  const styleDegraded = strictTier && styleBeats < MIN_VISUAL_BEATS;
+
   const uniqueCount = new Set(visualBeats.map((b) => b.url)).size;
   console.log(
     JSON.stringify({
@@ -581,6 +660,10 @@ export async function fetchBrollForQueries(queries, opts = {}) {
       unique_urls: uniqueCount,
       queries: cleaned.length,
       concurrency,
+      style_beats: styleBeats,
+      style_acceptance_rate: styleAcceptanceRate,
+      vision_calls: visionBudget.calls,
+      style_degraded: styleDegraded,
     })
   );
 
@@ -588,6 +671,8 @@ export async function fetchBrollForQueries(queries, opts = {}) {
     pexelsVideoUrls: visualBeats.map((b) => b.url),
     visualBeats,
     motif,
+    styleAcceptanceRate,
+    styleDegraded,
   };
 }
 

@@ -1,13 +1,14 @@
 # Short Clips render worker
 
-Always-on claim loop: **prepare** (script + Pexels/vision) → TTS → download clips → FFmpeg 9:16 + captions → Supabase Storage.
+Always-on claim loop: **prepare** (script + Pexels/Pixabay/vision) → TTS → download clips → FFmpeg 9:16 + captions → Supabase Storage.
 
 ## Local
 
 ```bash
 cd worker
 cp .env.example .env
-# Set SUPABASE_*, OPENAI_API_KEY, PEXELS_API_KEY (or rely on ../.env.local)
+# Set SUPABASE_*, OPENAI_API_KEY, PEXELS_API_KEY, optional PIXABAY_API_KEY
+# (or rely on ../.env.local)
 npm install
 # STUB_RENDER=0 (default) runs the real pipeline via ffmpeg-static
 npm run dev
@@ -15,7 +16,7 @@ npm run dev
 
 Also run the Next app (`npm run dev` in repo root). Generate a clip; worker logs `step_prepare` → `step_tts` → `step_download` → `step_ffmpeg` → `step_upload` → `job_done`.
 
-`POST /api/generate` only enqueues (topic + settings). Script and B-roll run on the worker so Vercel timeouts cannot kill prep mid-flight.
+`POST /api/generate` only enqueues (topic + settings, including optional `visualStyle`). Script and B-roll run on the worker so Vercel timeouts cannot kill prep mid-flight.
 
 ### Storage bucket
 
@@ -43,8 +44,9 @@ On ~1–2 GB hosts set `FFMPEG_LOW_MEM=1` to encode one clip at a time (avoids O
 | `SUPABASE_URL` | yes | Project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | Service role |
 | `OPENAI_API_KEY` | yes (real render) | TTS + script + vision verify |
-| `PEXELS_API_KEY` | yes (real render) | B-roll search (prepare stage) |
-| `BROLL_CONCURRENCY` | no | Parallel Pexels/vision beats (default `3`, max `8`) |
+| `PEXELS_API_KEY` | yes (real render) | Primary B-roll search (prepare stage) |
+| `PIXABAY_API_KEY` | no | Optional second stock provider. Signup: https://pixabay.com/api/docs/. When absent, worker logs `provider_unavailable` and routes Pexels-only (never throws). |
+| `BROLL_CONCURRENCY` | no | Parallel vision beats (default `3`, max `8`) |
 | `WORKER_ID` | yes | Unique per instance |
 | `LEASE_SECONDS` | no | Default 180; raise to 300 for long encodes |
 | `POLL_MS` | no | Default 3000 |
@@ -59,6 +61,13 @@ On ~1–2 GB hosts set `FFMPEG_LOW_MEM=1` to encode one clip at a time (avoids O
 | `RETENTION_SWEEP_MS` | no | DB expiry sweep cadence (default `900000` = 15 min) |
 | `FFMPEG_LOW_MEM` | no | `1` = segment path for small RAM; default = single-pass encode |
 | `FFMPEG_THREADS` | no | FFmpeg `-threads` / `-filter_threads` (default `1`; try `2`–`3` on 4 vCPU) |
+
+### Pixabay fair use & licensing (verified 2026-08-27)
+
+- Default rate ceiling **100 req/60s** per key — the worker paces Pixabay searches to **≤ 1 req/s**, backs off on `X-RateLimit-*` floor / 429, and swaps to Pexels.
+- Pixabay requires search results be **cached for 24 hours**; we honor that with an in-memory search cache.
+- "Systematic mass downloads are not allowed" — per-render media dedupe keyed by `providerAssetId` avoids re-fetching the same file within a job. We pass files to FFmpeg (never permanent hotlinking).
+- Clips are stored only as `provider` + `providerAssetId` on each beat. Pexels free license and Pixabay Content License permit unattributed commercial use for rendering. Pixabay asks for attribution when search results are *displayed* to end users — not triggered here (no result thumbnails in the product UI).
 
 ## Object storage
 

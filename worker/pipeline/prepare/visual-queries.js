@@ -1,3 +1,5 @@
+import { STYLE_QUERY_VOCAB } from "./video-taxonomy.js";
+
 const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
 
 export const MIN_SHOTS = 4;
@@ -53,77 +55,93 @@ export function isVagueStockQuery(query) {
 }
 
 /**
- * Rewrite a vague query from the spoken line (and topic constraints).
+ * Rewrite a vague query from the spoken line (and topic / style constraints).
  * @param {string} query
  * @param {string} line
  * @param {string} [topic]
+ * @param {string | null} [visualStyle]
  */
-export function hardenStockQuery(query, line, topic = "") {
+export function hardenStockQuery(query, line, topic = "", visualStyle = null) {
   const q = String(query || "").trim();
-  if (!isVagueStockQuery(q)) return q;
+  const style = typeof visualStyle === "string" ? visualStyle.trim().toLowerCase() : "";
+  const vocab = style && STYLE_QUERY_VOCAB[style] ? STYLE_QUERY_VOCAB[style] : null;
 
-  const spoken = String(line || "").trim();
-  const stop = new Set([
-    "the",
-    "a",
-    "an",
-    "and",
-    "or",
-    "but",
-    "for",
-    "with",
-    "from",
-    "into",
-    "your",
-    "you",
-    "our",
-    "this",
-    "that",
-    "these",
-    "those",
-    "will",
-    "can",
-    "just",
-    "about",
-    "then",
-    "than",
-    "when",
-    "while",
-    "have",
-    "has",
-    "are",
-    "is",
-    "be",
-    "to",
-    "of",
-    "in",
-    "on",
-    "at",
-    "it",
-    "we",
-    "they",
-    "minute",
-    "minutes",
-    "second",
-    "seconds",
-  ]);
-  const tokens = spoken
-    .replace(/[^\w\s-]/g, " ")
-    .split(/\s+/)
-    .map((w) => w.trim())
-    .filter((w) => w.length > 2 && !stop.has(w.toLowerCase()));
+  let hardened = q;
+  if (isVagueStockQuery(q)) {
+    const spoken = String(line || "").trim();
+    const stop = new Set([
+      "the",
+      "a",
+      "an",
+      "and",
+      "or",
+      "but",
+      "for",
+      "with",
+      "from",
+      "into",
+      "your",
+      "you",
+      "our",
+      "this",
+      "that",
+      "these",
+      "those",
+      "will",
+      "can",
+      "just",
+      "about",
+      "then",
+      "than",
+      "when",
+      "while",
+      "have",
+      "has",
+      "are",
+      "is",
+      "be",
+      "to",
+      "of",
+      "in",
+      "on",
+      "at",
+      "it",
+      "we",
+      "they",
+      "minute",
+      "minutes",
+      "second",
+      "seconds",
+    ]);
+    const tokens = spoken
+      .replace(/[^\w\s-]/g, " ")
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length > 2 && !stop.has(w.toLowerCase()));
 
-  if (tokens.length >= 2) {
-    return tokens.slice(0, 5).join(" ").toLowerCase();
+    if (tokens.length >= 2) {
+      hardened = tokens.slice(0, 5).join(" ").toLowerCase();
+    } else {
+      const topicBits = String(topic || "")
+        .replace(/[^\w\s-]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2)
+        .slice(0, 4)
+        .join(" ");
+      hardened = topicBits || q;
+    }
   }
 
-  const topicBits = String(topic || "")
-    .replace(/[^\w\s-]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2)
-    .slice(0, 4)
-    .join(" ");
-  return topicBits || q;
+  // Style-aware tail when style set and query lacks style vocab (D9 — user terms win).
+  if (vocab && vocab.length > 0) {
+    const lower = hardened.toLowerCase();
+    const hasStyleTerm = vocab.some((term) => lower.includes(term.toLowerCase()));
+    if (!hasStyleTerm && isVagueStockQuery(q)) {
+      hardened = `${hardened} ${vocab[0]}`.trim();
+    }
+  }
+
+  return hardened;
 }
 
 /**
@@ -201,6 +219,7 @@ export function beatLinesFromScript(script) {
  *
  * @param {string} script
  * @param {string} topic
+ * @param {{ visualStyle?: string | null }} [opts]
  * @returns {Promise<{
  *   motif: string,
  *   queries: string[],
@@ -210,11 +229,23 @@ export function beatLinesFromScript(script) {
  *   avoid: string[]
  * }>}
  */
-export async function planVisualBeats(script, topic) {
+export async function planVisualBeats(script, topic, opts = {}) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || apiKey === "your_openai_key_here") {
     throw new Error("OPENAI_API_KEY is not configured on the server.");
   }
+
+  const visualStyle =
+    typeof opts.visualStyle === "string" && opts.visualStyle.trim()
+      ? opts.visualStyle.trim().toLowerCase()
+      : null;
+  const vocab =
+    visualStyle && STYLE_QUERY_VOCAB[visualStyle]
+      ? STYLE_QUERY_VOCAB[visualStyle]
+      : null;
+  const stylePromptExtra = vocab
+    ? `\n- Prefer describing shots with a "${visualStyle}" look using terms like: ${vocab.join(", ")}. Honor any user-supplied style words over these presets.`
+    : "";
 
   const lines = beatLinesFromScript(script);
   const numbered = lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
@@ -237,12 +268,12 @@ export async function planVisualBeats(script, topic) {
 Rules:
 - You receive N numbered lines. Return exactly N shots in the same order.
 - Each shot.query must depict WHAT THAT LINE IS SAYING (objects, hands, places, actions a camera can film).
-- Queries: concrete Pexels phrases, 2–6 words (e.g. "close up coffee pour", "bodyweight push ups floor").
+- Queries: concrete stock-video phrases, 2–6 words (e.g. "close up coffee pour", "bodyweight push ups floor").
 - Honor TOPIC constraints literally (e.g. "no equipment" → bodyweight / living room — never gym machines or dumbbells; "home" → indoor home setting).
 - Ban vague filler: intensity, atmosphere, vibes, motivation, mindset, "intense workout close up", "person working out", lone "close up"/"detail"/"wide shot".
 - Motif is secondary: same visual world is good, but NEVER sacrifice line meaning for motif continuity.
 - Avoid random faces/portraits unless the line is explicitly about a person.
-- Keep each query specific to that line — no repeated vague fillers.
+- Keep each query specific to that line — no repeated vague fillers.${stylePromptExtra}
 Return JSON only.`,
         },
         {
@@ -282,16 +313,20 @@ Requirements:
 
   const data = await response.json();
   const raw = data?.choices?.[0]?.message?.content?.trim() || "{}";
-  return normalizeVisualPlan(raw, topic, { lines });
+  return normalizeVisualPlan(raw, topic, { lines, visualStyle });
 }
 
 /**
  * Normalize LLM JSON into line-bound beats.
  * @param {string|object} raw
  * @param {string} topic
- * @param {{ lines?: string[] }} [opts]
+ * @param {{ lines?: string[], visualStyle?: string | null }} [opts]
  */
 export function normalizeVisualPlan(raw, topic = "topic", opts = {}) {
+  const visualStyle =
+    typeof opts.visualStyle === "string" && opts.visualStyle.trim()
+      ? opts.visualStyle.trim().toLowerCase()
+      : null;
   let parsed = raw;
   if (typeof raw === "string") {
     try {
@@ -365,7 +400,7 @@ export function normalizeVisualPlan(raw, topic = "topic", opts = {}) {
             ? `${base} detail`
             : `${base} close up`;
       const rawQuery = match?.query || fallbackQuery;
-      const query = hardenStockQuery(rawQuery, line, topic);
+      const query = hardenStockQuery(rawQuery, line, topic, visualStyle);
       return {
         line,
         query,
@@ -375,7 +410,7 @@ export function normalizeVisualPlan(raw, topic = "topic", opts = {}) {
   } else {
     beats = beats.map((b) => ({
       ...b,
-      query: hardenStockQuery(b.query, b.line, topic),
+      query: hardenStockQuery(b.query, b.line, topic, visualStyle),
     }));
   }
 
@@ -407,7 +442,7 @@ export function normalizeVisualPlan(raw, topic = "topic", opts = {}) {
     while (beats.length < MIN_SHOTS && fi < fillers.length) {
       const raw = fillers[fi++];
       const line = beats[beats.length - 1]?.line || base;
-      const query = hardenStockQuery(raw, line, topic);
+      const query = hardenStockQuery(raw, line, topic, visualStyle);
       beats.push({ line, query, weight: wordCount(line) });
     }
   }
@@ -426,8 +461,11 @@ export function normalizeVisualPlan(raw, topic = "topic", opts = {}) {
 
 /**
  * @deprecated Prefer planVisualBeats — kept for callers that only need query strings.
+ * @param {string} script
+ * @param {string} topic
+ * @param {{ visualStyle?: string | null }} [opts]
  */
-export async function deriveVisualQueries(script, topic) {
-  const plan = await planVisualBeats(script, topic);
+export async function deriveVisualQueries(script, topic, opts = {}) {
+  const plan = await planVisualBeats(script, topic, opts);
   return plan.queries;
 }

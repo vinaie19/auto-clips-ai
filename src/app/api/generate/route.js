@@ -11,10 +11,13 @@ import {
   SUBTITLE_THEMES,
   VIDEO_TONES,
   ASPECT_RATIOS,
+  VISUAL_STYLE_IDS,
   resolveCaptionsEnabled,
   resolveTtsVoice,
   resolveTargetDuration,
   resolveAspectRatio,
+  resolveVisualStyle,
+  resolvePurpose,
   creditsForDuration,
 } from "@/lib/render-constants";
 
@@ -41,6 +44,8 @@ export async function POST(request) {
     const voice = resolveTtsVoice(body?.voice, tone);
     const targetDurationSeconds = resolveTargetDuration(body?.targetDurationSeconds);
     const aspectRatio = resolveAspectRatio(body?.aspectRatio);
+    const visualStyle = resolveVisualStyle(body?.visualStyle);
+    const purpose = resolvePurpose(tone);
 
     if (!topic) {
       return NextResponse.json({ error: "topic is required." }, { status: 400 });
@@ -67,6 +72,15 @@ export async function POST(request) {
     if (!Object.keys(ASPECT_RATIOS).includes(aspectRatio)) {
       return NextResponse.json(
         { error: "aspectRatio must be 9:16, 16:9, or 1:1." },
+        { status: 400 }
+      );
+    }
+
+    if (visualStyle === undefined) {
+      return NextResponse.json(
+        {
+          error: `visualStyle must be one of: ${VISUAL_STYLE_IDS.join(", ")} (or "auto"/omit).`,
+        },
         { status: 400 }
       );
     }
@@ -109,6 +123,9 @@ export async function POST(request) {
       captionsEnabled,
       targetDurationSeconds,
       aspectRatio,
+      // Auto/absent → omit visualStyle so the worker resolves via PURPOSE_STYLE_DEFAULT (F7)
+      ...(visualStyle ? { visualStyle } : {}),
+      purpose,
     };
 
     const { data: videoRow, error: videoError } = await supabase

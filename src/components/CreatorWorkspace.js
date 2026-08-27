@@ -16,6 +16,7 @@ import {
   VIDEO_TONES,
   VIDEO_DURATIONS,
   ASPECT_RATIOS,
+  VISUAL_STYLES,
 } from "@/lib/render-constants";
 
 const SUBTITLE_THEME_OPTIONS = Object.entries(SUBTITLE_THEMES).map(
@@ -34,6 +35,11 @@ const VIDEO_TONE_OPTIONS = Object.entries(VIDEO_TONES).map(([id, tone]) => ({
   blurb: tone.blurb,
   defaultVoice: tone.defaultVoice,
 }));
+
+const VIDEO_STYLE_OPTIONS = [
+  { id: "auto", label: "Auto", blurb: "Auto — match the look to your topic automatically." },
+  ...VISUAL_STYLES.map(({ id, label, blurb }) => ({ id, label, blurb })),
+];
 
 const DURATION_OPTIONS = Object.values(VIDEO_DURATIONS).map((d) => ({
   id: String(d.seconds),
@@ -198,7 +204,7 @@ function HoverSelect({
           />
         ) : null}
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
-          {selected?.id}
+          {selected?.label || selected?.id || "Auto"}
         </span>
         <span className="text-xs text-zinc-500">{open ? "▴" : "▾"}</span>
       </button>
@@ -238,7 +244,9 @@ function HoverSelect({
                           style={{ backgroundColor: option.color }}
                         />
                       ) : null}
-                      <span className="font-medium">{option.id}</span>
+                      <span className="font-medium">
+                        {option.label || option.id || "Auto"}
+                      </span>
                       {active ? (
                         <span className="ml-auto text-[10px] text-indigo-300">
                           Selected
@@ -340,6 +348,7 @@ export default function CreatorWorkspace() {
   const [subtitleTheme, setSubtitleTheme] = useState("Viral Yellow");
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [tone, setTone] = useState("Cinematic");
+  const [visualStyle, setVisualStyle] = useState("auto");
   const [voice, setVoice] = useState(TTS_VOICE_BY_TONE.Cinematic);
   const [targetDurationSeconds, setTargetDurationSeconds] = useState(45);
   const [aspectRatio, setAspectRatio] = useState("9:16");
@@ -811,6 +820,8 @@ export default function CreatorWorkspace() {
         body: JSON.stringify({
           topic: trimmed,
           tone,
+          visualStyle:
+            visualStyle && visualStyle !== "auto" ? visualStyle : undefined,
           subtitleTheme,
           voice,
           captionsEnabled,
@@ -1069,6 +1080,18 @@ export default function CreatorWorkspace() {
                     setTone(next);
                     setVoice(TTS_VOICE_BY_TONE[next] || "nova");
                   }}
+                />
+              </section>
+
+              <section className="relative z-20 glass-card rounded-2xl p-5 sm:p-6">
+                <HoverSelect
+                  label="Visual style"
+                  hint="Pick the footage look. Leave on Auto to match the topic."
+                  value={visualStyle}
+                  options={VIDEO_STYLE_OPTIONS}
+                  disabled={isBusy}
+                  variant="tone"
+                  onChange={(next) => setVisualStyle(next)}
                 />
               </section>
 

@@ -106,9 +106,12 @@ export async function runRenderPipeline(supabase, job, opts = {}) {
       })
     );
       // TTS and clip downloads are independent — overlap for wall-clock savings.
+      const beatsForDownload = Array.isArray(payload.visualBeats)
+        ? payload.visualBeats
+        : [];
       const [, clipPaths] = await Promise.all([
         synthesizeSpeech(script, voice, rawAudioPath),
-        downloadClips(pexelsUrls, workDir),
+        downloadClips(pexelsUrls, workDir, beatsForDownload),
       ]);
 
       const fittedPath = join(workDir, "audio.mp3");
