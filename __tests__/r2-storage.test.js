@@ -89,6 +89,9 @@ describe("uploadFile", () => {
       expect.objectContaining({
         region: "auto",
         endpoint: "https://acct123.r2.cloudflarestorage.com",
+        requestChecksumCalculation: "WHEN_REQUIRED",
+        responseChecksumValidation: "WHEN_REQUIRED",
+        maxAttempts: 1,
       })
     );
     expect(PutObjectCommand).toHaveBeenCalledWith(

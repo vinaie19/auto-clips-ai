@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRenderPipeline } from "./pipeline/index.js";
 import { sweepExpiredVideos } from "./pipeline/retention.js";
+import { isRetryableError } from "./pipeline/retry.js";
 
 const WORKER_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -59,30 +60,6 @@ function getSupabase() {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-function isRetryableError(err) {
-  const status = Number(err?.status ?? err?.statusCode ?? err?.code);
-  if ([408, 429, 500, 502, 503, 504].includes(status)) return true;
-  const msg = String(err?.message || err || "").toLowerCase();
-  const nonRetryable = [
-    "invalid payload",
-    "not configured",
-    "ffmpeg is not installed",
-  ];
-  if (nonRetryable.some((s) => msg.includes(s))) return false;
-  // empty script without prepare is a bug; prepare API misses are retryable via status
-  if (msg.includes("empty script") && !msg.includes("openai")) return false;
-  const retryable = [
-    "timeout",
-    "etimedout",
-    "econnreset",
-    "network",
-    "fetch failed",
-    "rate limit",
-    "oom",
-  ];
-  return retryable.some((s) => msg.includes(s));
 }
 
 function computeBackoffSeconds(attempt) {
@@ -325,8 +302,13 @@ async function main() {
   for (;;) {
     try {
       if (Date.now() - lastSweep >= RETENTION_SWEEP_MS) {
-        await sweepExpiredVideos(supabase);
-        lastSweep = Date.now();
+        try {
+          await sweepExpiredVideos(supabase);
+        } catch (err) {
+          console.error("retention sweep error:", err);
+        } finally {
+          lastSweep = Date.now();
+        }
       }
       const job = await claimJob(supabase);
       if (!job?.id) {
