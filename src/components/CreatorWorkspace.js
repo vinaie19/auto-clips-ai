@@ -1068,7 +1068,7 @@ export default function CreatorWorkspace() {
                 </div>
               </section>
 
-              <section className="relative z-20 glass-card rounded-2xl p-5 sm:p-6">
+              <section className="relative z-30 glass-card rounded-2xl p-5 sm:p-6">
                 <HoverSelect
                   label="Video tone"
                   hint="Open the menu and hover to read each vibe."
